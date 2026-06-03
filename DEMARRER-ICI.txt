@@ -1,0 +1,43 @@
+Dust-Exporter — proxy compatible OpenAI / Anthropic devant tes agents Dust
+=========================================================================
+Cette archive est AUTONOME : le SDK Dust est inclus (dust-tt-client-*.tgz),
+pas besoin d'autre dépôt.
+
+1) PRÉREQUIS
+   - Node.js >= 20   (vérifie :  node -v)
+   - Linux seulement (optionnel) : pour utiliser le trousseau système,
+     installe libsecret :  sudo apt-get install -y libsecret-1-0
+     Sinon le proxy bascule tout seul sur un fichier (~/.dust-cli/credentials.json).
+
+2) INSTALLATION
+   cd Dust-Exporter
+   npm install
+
+3) CONNEXION À DUST (TON propre compte Dust)
+   npm run login      # ouvre un flux d'authentification (device flow)
+   npm run status     # doit afficher "authenticated: true" + la liste de tes agents
+
+   Astuce : si keytar/trousseau pose souci, force le stockage fichier :
+   DUST_CREDENTIAL_STORE=file npm run login
+   DUST_CREDENTIAL_STORE=file npm run status
+
+4) LANCER LE PROXY
+   npm run serve -- --agent "OPUS" --client-tools
+   # écoute sur http://127.0.0.1:8787
+   # la liste de tes agents (= les "modèles") :  http://127.0.0.1:8787/v1/models
+
+5) L'UTILISER
+   • Claude Code :
+       ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \
+       ANTHROPIC_API_KEY=dummy \
+       ANTHROPIC_MODEL="OPUS" \
+       ANTHROPIC_SMALL_FAST_MODEL="claude-haiku" \
+       claude
+     (avec --client-tools, les outils natifs de Claude Code — Read/Edit/Bash — 
+      sont pilotés par ton agent Dust et s'exécutent en local.)
+
+   • SDK OpenAI :
+       base_url = http://127.0.0.1:8787/v1   api_key = peu importe
+       model    = l'id/nom d'un de tes agents Dust
+
+Détails complets (modes éphémère/persistant, options, etc.) : voir README.md

@@ -1,0 +1,25 @@
+services:
+  dust-exporter:
+    build: .
+    image: dust-exporter
+    ports:
+      - "8787:8787"
+    # Persist the Dust OAuth session + conversation-state map across restarts.
+    volumes:
+      - dust-data:/data
+      # --- Alternative: reuse the dust-cli session already on your host ---
+      # Comment out the named volume above and bind-mount your home store
+      # instead (the file backend reads/writes credentials.json there):
+      # - ${HOME}/.dust-cli:/data
+    # Optional runtime config (default agent, required client API key, etc.).
+    # Drop a .env next to this file or edit inline — all keys are optional.
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    # `up` runs `serve`. Authenticate once with the device flow:
+    #   docker compose run --rm dust-exporter login
+    #   docker compose run --rm dust-exporter status
+
+volumes:
+  dust-data:

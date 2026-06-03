@@ -1,0 +1,35 @@
+{
+  "name": "dust-exporter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenAI- and Anthropic-compatible API proxy in front of Dust agents (shares the dust-cli OAuth session).",
+  "type": "module",
+  "bin": {
+    "dust-exporter": "src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "serve": "tsx src/index.ts serve",
+    "login": "tsx src/index.ts login",
+    "status": "tsx src/index.ts status",
+    "dev": "tsx watch src/index.ts serve",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@dust-tt/client": "file:./dust-tt-client-1.2.6.tgz",
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "jwt-decode": "^4.0.0",
+    "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

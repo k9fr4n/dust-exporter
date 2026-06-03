@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.gitignore
+*.log
+.env
+.DS_Store
+test
+vitest.config.ts
+README.md
+DEMARRER-ICI.txt
+Dockerfile
+docker-compose.yml
+.dockerignore
