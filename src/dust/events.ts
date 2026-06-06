@@ -5,6 +5,32 @@ export interface NormalizeCtx {
   onApprove: (ev: any) => Promise<void>;
 }
 
+interface FinishInfo {
+  finishReason: "stop" | "max_steps";
+  stepsUsed: number;
+  maxSteps: number;
+}
+
+/** Inspect a terminal Dust agent message to decide whether the run finished
+ *  naturally or was cut off by the agent's `maxStepsPerRun` cap. Dust numbers
+ *  steps from 0, so steps-used = (highest step index seen across actions /
+ *  rawContents) + 1. When that reaches the cap, the run was almost certainly
+ *  truncated and can be resumed by posting a follow-up on the same conversation. */
+function finishInfo(message: any): FinishInfo {
+  const maxSteps = Number(message?.configuration?.maxStepsPerRun) || 0;
+  const steps: number[] = [];
+  for (const a of message?.actions ?? []) {
+    if (typeof a?.step === "number") steps.push(a.step);
+  }
+  for (const r of message?.rawContents ?? []) {
+    if (typeof r?.step === "number") steps.push(r.step);
+  }
+  const stepsUsed = steps.length ? Math.max(...steps) + 1 : 0;
+  const finishReason: FinishInfo["finishReason"] =
+    maxSteps > 0 && stepsUsed >= maxSteps ? "max_steps" : "stop";
+  return { finishReason, stepsUsed, maxSteps };
+}
+
 /** Translate the raw Dust agent event stream into protocol-agnostic Deltas.
  *  Tool executions are auto-approved through `onApprove`. Pure transformer:
  *  feed it any async iterable of events to unit-test it without the network. */
@@ -14,11 +40,14 @@ export async function* normalizeEvents(
 ): AsyncGenerator<Delta> {
   const tools = new Set<string>();
   const files: GeneratedFile[] = [];
-  const done = (): Delta => ({
+  const done = (fin?: FinishInfo): Delta => ({
     type: "done",
     conversationId: ctx.conversationId,
     toolsUsed: [...tools],
     generatedFiles: files,
+    finishReason: fin?.finishReason ?? "stop",
+    stepsUsed: fin?.stepsUsed ?? 0,
+    maxSteps: fin?.maxSteps ?? 0,
   });
 
   for await (const ev of eventStream) {
@@ -58,7 +87,10 @@ export async function* normalizeEvents(
         return;
       case "agent_message_success":
       case "agent_message_gracefully_stopped":
+        yield done(finishInfo(ev.message));
+        return;
       case "agent_generation_cancelled":
+        // User/abort-initiated cancellation: never a step-cap, do not continue.
         yield done();
         return;
       default:

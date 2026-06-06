@@ -12,6 +12,10 @@ export interface Config {
   /** Prefix prepended to every Dust conversation title created by the proxy.
    *  Empty string disables custom titling (Dust auto-titles instead). */
   titlePrefix: string;
+  /** Max number of automatic continuation rounds when a Dust run is cut off by
+   *  the agent's `maxStepsPerRun` cap. Each round reposts a "continue" message
+   *  on the same (stateful) conversation, getting a fresh step budget. 0 = off. */
+  maxContinuations: number;
   workosDomain: string;
   workosClientId: string;
   workosClaimNamespace: string;
@@ -25,6 +29,12 @@ function env(name: string, fallback: string): string {
 }
 function bool(name: string): boolean {
   return ["1", "true", "yes", "on"].includes((process.env[name] || "").toLowerCase());
+}
+/** Parse a non-negative integer env var, falling back to `fallback` when unset,
+ *  empty, or not a finite number >= 0. */
+function int(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -41,6 +51,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     // (Claude Code, OpenAI SDK) don't accumulate Dust conversations.
     ephemeral: process.env.DUST_PROXY_EPHEMERAL === undefined ? true : bool("DUST_PROXY_EPHEMERAL"),
     titlePrefix: process.env.DUST_PROXY_TITLE_PREFIX ?? "PROXY: ",
+    maxContinuations: int("DUST_MAX_CONTINUATIONS", 4),
     workosDomain: env("WORKOS_DOMAIN", "api.workos.com"),
     workosClientId: env("WORKOS_CLIENT_ID", "client_01JGCT55T7FVDG9XF74925R1KT"),
     workosClaimNamespace: env("WORKOS_CLAIM_NAMESPACE", "https://dust.tt/"),

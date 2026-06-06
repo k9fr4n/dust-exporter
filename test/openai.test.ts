@@ -9,7 +9,7 @@ async function collectStr(g: AsyncIterable<string>) {
   for await (const s of g) out.push(s);
   return out;
 }
-const doneDelta: Delta = { type: "done", conversationId: "c", toolsUsed: [], generatedFiles: [] };
+const doneDelta: Delta = { type: "done", conversationId: "c", toolsUsed: [], generatedFiles: [], finishReason: "stop", stepsUsed: 0, maxSteps: 0 };
 
 describe("parseChatRequest", () => {
   it("extracts system and flattens array content", () => {
