@@ -38,6 +38,7 @@ async function cmdServe(args: Args): Promise<void> {
   if (args["with-tools"]) overrides.withTools = true;
   if (args["client-tools"]) overrides.clientTools = true;
   if (typeof args["title-prefix"] === "string") overrides.titlePrefix = args["title-prefix"];
+  if (args["max-continuations"] !== undefined) overrides.maxContinuations = Number(args["max-continuations"]);
   if (args.ephemeral) overrides.ephemeral = true;
   if (args.persistent) overrides.ephemeral = false;
   if (typeof args["api-key"] === "string") overrides.proxyApiKey = args["api-key"];
@@ -55,6 +56,7 @@ async function cmdServe(args: Args): Promise<void> {
     out(`  client-tools passthrough: ${cfg.clientTools ? "enabled (Claude Code tools -> Dust agent)" : "disabled"}`);
     out(`  conversations: ${cfg.ephemeral ? "ephemeral (auto-deleted each turn)" : "persistent (reused via fingerprint)"}`);
     out(`  title prefix: ${cfg.titlePrefix ? JSON.stringify(cfg.titlePrefix) : "(none, Dust auto-titles)"}`);
+    out(`  step-cap auto-continuation: ${cfg.maxContinuations > 0 ? `up to ${cfg.maxContinuations} round(s)` : "disabled"}`);
     if (cfg.proxyApiKey) out("  proxy API key: required on /v1/*");
   });
 }
@@ -138,6 +140,7 @@ function cmdHelp(): void {
   out("  --persistent      Reuse Dust conversations across turns (default: ephemeral)");
   out("  --ephemeral       Delete the Dust conversation after each turn (default)");
   out('  --title-prefix <s> Prefix for created conversation titles (default "PROXY: ", "" to disable)');
+  out("  --max-continuations <n> Auto-resume runs cut off by the agent step cap (default 4, 0 to disable)");
 }
 
 async function main(): Promise<void> {

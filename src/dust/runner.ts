@@ -21,6 +21,10 @@ export interface StartTurnInput {
   ephemeral?: boolean;
   /** Prefix for the conversation title (empty/undefined = let Dust auto-title). */
   titlePrefix?: string;
+  /** Max automatic continuation rounds when a run is cut off by `maxStepsPerRun`.
+   *  Each round reposts a follow-up on the same conversation (fresh step budget).
+   *  0 / undefined = disabled. */
+  maxContinuations?: number;
 }
 
 export interface StartedTurn {
@@ -67,8 +71,18 @@ async function approve(api: DustAPI, ev: any): Promise<void> {
  *  thrown HttpErrors (mapped to a proper status BEFORE any SSE byte is sent);
  *  the returned `deltas` generator then streams the answer. */
 export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
-  const { api, agentId, messages, system, store, clientSideMCPServerIds, signal, ephemeral, titlePrefix } =
-    input;
+  const {
+    api,
+    agentId,
+    messages,
+    system,
+    store,
+    clientSideMCPServerIds,
+    signal,
+    ephemeral,
+    titlePrefix,
+  } = input;
+  const maxContinuations = Math.max(0, input.maxContinuations ?? 0);
   const workspaceId = api.workspaceId();
   const context = await buildContext(api, clientSideMCPServerIds);
   const mentions = [{ configurationId: agentId }];
@@ -137,20 +151,91 @@ export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
     onApprove: (ev) => approve(api, ev),
   });
 
+  // When a run is cut off by `maxStepsPerRun`, we post this follow-up on the
+  // SAME (stateful) conversation to resume with a fresh step budget. No replay:
+  // the server keeps the full context.
+  const CONTINUE_MSG =
+    "Continue exactly where you left off, picking up the previous task. " +
+    "Do not restart or repeat work already completed.";
+
+  /** Drive the run, transparently chaining continuation runs when Dust truncates
+   *  on the step cap. Only the FINAL `done` is emitted to the client; deltas from
+   *  every round are streamed contiguously. */
+  async function* runRounds(): AsyncGenerator<Delta> {
+    const key = ephemeral ? null : plan!.fingerprintKey;
+    let stream = base;
+    for (let round = 0; ; round++) {
+      let last: Delta | undefined;
+      for await (const d of stream) {
+        if (d.type === "done") {
+          last = d;
+          break;
+        }
+        yield d;
+      }
+      if (key && last?.type === "done") await store.set(key, conversationId);
+
+      // Stop unless the run was step-capped AND we still have rounds left.
+      if (last?.type !== "done" || last.finishReason !== "max_steps" || round >= maxContinuations) {
+        if (last) yield last;
+        return;
+      }
+
+      log.info("auto-continue: run hit step cap, resuming", {
+        round: round + 1,
+        of: maxContinuations,
+        conversationId,
+        stepsUsed: last.stepsUsed,
+        maxSteps: last.maxSteps,
+      });
+
+      const post = await api.postUserMessage({
+        conversationId,
+        message: { content: CONTINUE_MSG, mentions, context: context as any },
+        signal,
+      });
+      if (post.isErr()) {
+        log.warn("auto-continue postUserMessage failed", post.error.message);
+        yield last;
+        return;
+      }
+      const conv = await api.getConversation({ conversationId });
+      if (conv.isErr()) {
+        log.warn("auto-continue getConversation failed", conv.error.message);
+        yield last;
+        return;
+      }
+      conversation = conv.value;
+      const next = await api.streamAgentAnswerEvents({
+        conversation,
+        userMessageId: post.value.sId,
+        signal,
+      });
+      if (next.isErr()) {
+        const err: any = next.error;
+        log.warn("auto-continue stream failed", err?.message ?? String(err));
+        yield last;
+        return;
+      }
+      // Visual separator between chained runs.
+      yield { type: "text", text: "\n" };
+      stream = normalizeEvents(next.value.eventStream, {
+        conversationId,
+        onApprove: (ev) => approve(api, ev),
+      });
+    }
+  }
+
   async function* wrap(): AsyncGenerator<Delta> {
     if (ephemeral) {
       try {
-        for await (const d of base) yield d;
+        yield* runRounds();
       } finally {
         // Clean up the throwaway conversation however the stream ended.
         void deleteConversation(api, conversationId);
       }
     } else {
-      const key = plan!.fingerprintKey;
-      for await (const d of base) {
-        if (d.type === "done") await store.set(key, conversationId);
-        yield d;
-      }
+      yield* runRounds();
     }
   }
 

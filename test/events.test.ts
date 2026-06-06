@@ -39,6 +39,47 @@ describe("normalizeEvents", () => {
     expect(done.toolsUsed).toContain("read_file");
     expect(done.generatedFiles[0].fileId).toBe("f1");
   });
+  it("flags finishReason=max_steps when the run reaches the step cap", async () => {
+    const evs = gen([
+      { type: "generation_tokens", classification: "tokens", text: "partial" },
+      {
+        type: "agent_message_success",
+        message: {
+          configuration: { maxStepsPerRun: 8 },
+          // steps are 0-indexed; step 7 means 8 steps consumed == cap
+          actions: [{ step: 6 }, { step: 7 }],
+          rawContents: [{ step: 0, content: "x" }, { step: 7, content: "y" }],
+        },
+      },
+    ]);
+    const out = await collect(normalizeEvents(evs, { conversationId: "c", onApprove: async () => {} }));
+    const done = out.find((d) => d.type === "done") as any;
+    expect(done.finishReason).toBe("max_steps");
+    expect(done.stepsUsed).toBe(8);
+    expect(done.maxSteps).toBe(8);
+  });
+  it("reports finishReason=stop when the run finishes under the cap", async () => {
+    const evs = gen([
+      { type: "generation_tokens", classification: "tokens", text: "done" },
+      {
+        type: "agent_message_success",
+        message: { configuration: { maxStepsPerRun: 64 }, actions: [{ step: 2 }], rawContents: [{ step: 3 }] },
+      },
+    ]);
+    const out = await collect(normalizeEvents(evs, { conversationId: "c", onApprove: async () => {} }));
+    const done = out.find((d) => d.type === "done") as any;
+    expect(done.finishReason).toBe("stop");
+    expect(done.stepsUsed).toBe(4);
+    expect(done.maxSteps).toBe(64);
+  });
+  it("treats agent_generation_cancelled as a plain stop (never max_steps)", async () => {
+    const evs = gen([
+      { type: "agent_generation_cancelled", message: { configuration: { maxStepsPerRun: 1 }, actions: [{ step: 5 }] } },
+    ]);
+    const out = await collect(normalizeEvents(evs, { conversationId: "c", onApprove: async () => {} }));
+    const done = out.find((d) => d.type === "done") as any;
+    expect(done.finishReason).toBe("stop");
+  });
   it("emits error and stops on agent_error", async () => {
     const evs = gen([
       { type: "generation_tokens", classification: "tokens", text: "x" },

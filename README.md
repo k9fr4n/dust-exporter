@@ -145,6 +145,23 @@ the first user message>`, so proxy-created conversations are easy to spot (and
 filter) in your Dust workspace. Change the prefix with `--title-prefix "…"` or
 `DUST_PROXY_TITLE_PREFIX`; set it to an empty string to let Dust auto-title.
 
+### Step-cap auto-continuation
+
+Dust caps each agent **run** at `maxStepsPerRun` steps (a per-agent setting,
+e.g. 64). A long agentic task that exhausts this budget is cut off mid-flight.
+Because Dust conversations are **stateful**, the proxy works around this
+transparently: when it detects a run ended on the step cap (it reads the
+`maxStepsPerRun` and the steps actually consumed straight from the terminal
+agent message), it reposts a short "continue" message on the **same**
+conversation. That starts a fresh run with a full step budget while preserving
+all server-side context — no history replay. Deltas from every round stream
+contiguously, so the OpenAI/Anthropic client sees one uninterrupted answer.
+
+Bounded by `--max-continuations <n>` / `DUST_MAX_CONTINUATIONS` (default **4**,
+`0` disables). A run that genuinely finishes under the cap is never continued; a
+rare false positive (an agent finishing in exactly N steps) costs at most one
+extra "continue" round.
+
 ## Claude Code
 
 Claude Code speaks the Anthropic Messages API, so point it at the proxy:

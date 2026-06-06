@@ -71,7 +71,7 @@ export function createServer(cfg: Config): Server {
     const turn = await startTurn({
       api, agentId, messages: parsed.messages, system: parsed.system,
       store, clientSideMCPServerIds: tools, signal: ctrl.signal, ephemeral: cfg.ephemeral,
-      titlePrefix: cfg.titlePrefix,
+      titlePrefix: cfg.titlePrefix, maxContinuations: cfg.maxContinuations,
     });
     const id = openai.newId();
     if (parsed.stream) {
@@ -113,7 +113,7 @@ export function createServer(cfg: Config): Server {
     const turn = await startTurn({
       api, agentId, messages: parsed.messages, system: parsed.system,
       store, clientSideMCPServerIds: tools, signal: ctrl.signal, ephemeral: cfg.ephemeral,
-      titlePrefix: cfg.titlePrefix,
+      titlePrefix: cfg.titlePrefix, maxContinuations: cfg.maxContinuations,
     });
     const id = anthropic.newMsgId();
     if (parsed.stream) {
