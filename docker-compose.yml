@@ -2,8 +2,9 @@ services:
   dust-exporter:
     build: .
     image: dust-exporter
-    ports:
-      - "8787:8787"
+    # Host networking: the exporter binds 8787 directly on the host stack.
+    # Incompatible with `ports` and `networks` (Docker ignores them in host mode).
+    network_mode: host
     # Persist the Dust OAuth session + conversation-state map across restarts.
     volumes:
       - dust-data:/data
@@ -20,17 +21,7 @@ services:
     # `up` runs `serve`. Authenticate once with the device flow:
     #   docker compose run --rm dust-exporter login
     #   docker compose run --rm dust-exporter status
-    # Reachable from other compose projects on the shared network as
-    # http://dust-exporter:8787
-    networks:
-      - default
-      - shared
+    # Reachable on the host directly at http://localhost:8787
 
 volumes:
   dust-data:
-
-networks:
-  # External network shared with other compose projects.
-  # Create it once: docker network create shared
-  shared:
-    external: true
