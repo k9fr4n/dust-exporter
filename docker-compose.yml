@@ -20,6 +20,17 @@ services:
     # `up` runs `serve`. Authenticate once with the device flow:
     #   docker compose run --rm dust-exporter login
     #   docker compose run --rm dust-exporter status
+    # Reachable from other compose projects on the shared network as
+    # http://dust-exporter:8787
+    networks:
+      - default
+      - shared
 
 volumes:
   dust-data:
+
+networks:
+  # External network shared with other compose projects.
+  # Create it once: docker network create shared
+  shared:
+    external: true
