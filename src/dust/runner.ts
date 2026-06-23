@@ -173,6 +173,16 @@ export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
         }
         yield d;
       }
+      if (last?.type === "done") {
+        const a = last.agent;
+        log.info("turn resolved", {
+          conversationId,
+          requested: agentId,
+          agent: a?.name,
+          agentSId: a?.sId,
+          model: a?.providerId && a?.modelId ? `${a.providerId}/${a.modelId}` : undefined,
+        });
+      }
       if (key && last?.type === "done") await store.set(key, conversationId);
 
       // Stop unless the run was step-capped AND we still have rounds left.

@@ -27,5 +27,14 @@ export type Delta =
       stepsUsed: number;
       /** The agent's `maxStepsPerRun` cap as reported by Dust, 0 when unknown. */
       maxSteps: number;
+      /** The agent/model Dust actually resolved and ran, as reported on the
+       *  terminal agent message. Lets callers see the real model behind the
+       *  requested agent alias. Undefined when Dust sent no configuration. */
+      agent?: {
+        sId?: string;
+        name?: string;
+        providerId?: string;
+        modelId?: string;
+      };
     }
   | { type: "error"; message: string };

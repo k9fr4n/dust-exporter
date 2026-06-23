@@ -11,6 +11,28 @@ interface FinishInfo {
   maxSteps: number;
 }
 
+interface AgentInfo {
+  sId?: string;
+  name?: string;
+  providerId?: string;
+  modelId?: string;
+}
+
+/** Pull the agent/model Dust actually resolved off the terminal agent message.
+ *  `configuration` is a LightAgentConfigurationType: it carries the resolved
+ *  agent (sId/name) and the model (providerId/modelId) actually executed —
+ *  which can differ from the alias the client requested. */
+function agentInfo(message: any): AgentInfo | undefined {
+  const c = message?.configuration;
+  if (!c) return undefined;
+  return {
+    sId: c.sId,
+    name: c.name,
+    providerId: c.model?.providerId,
+    modelId: c.model?.modelId,
+  };
+}
+
 /** Inspect a terminal Dust agent message to decide whether the run finished
  *  naturally or was cut off by the agent's `maxStepsPerRun` cap. Dust numbers
  *  steps from 0, so steps-used = (highest step index seen across actions /
@@ -40,7 +62,7 @@ export async function* normalizeEvents(
 ): AsyncGenerator<Delta> {
   const tools = new Set<string>();
   const files: GeneratedFile[] = [];
-  const done = (fin?: FinishInfo): Delta => ({
+  const done = (fin?: FinishInfo, agent?: AgentInfo): Delta => ({
     type: "done",
     conversationId: ctx.conversationId,
     toolsUsed: [...tools],
@@ -48,6 +70,7 @@ export async function* normalizeEvents(
     finishReason: fin?.finishReason ?? "stop",
     stepsUsed: fin?.stepsUsed ?? 0,
     maxSteps: fin?.maxSteps ?? 0,
+    agent,
   });
 
   for await (const ev of eventStream) {
@@ -87,7 +110,7 @@ export async function* normalizeEvents(
         return;
       case "agent_message_success":
       case "agent_message_gracefully_stopped":
-        yield done(finishInfo(ev.message));
+        yield done(finishInfo(ev.message), agentInfo(ev.message));
         return;
       case "agent_generation_cancelled":
         // User/abort-initiated cancellation: never a step-cap, do not continue.
