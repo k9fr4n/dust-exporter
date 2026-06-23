@@ -199,7 +199,18 @@ class Session {
         if (d.type === "text") this.queue.push({ kind: "text", text: d.text });
         else if (d.type === "reasoning") this.queue.push({ kind: "reasoning", text: d.text });
         else if (d.type === "error") { this.queue.push({ kind: "error", message: d.message }); break; }
-        else if (d.type === "done") { this.queue.push({ kind: "done" }); break; }
+        else if (d.type === "done") {
+          const a = d.agent;
+          log.info("turn resolved", {
+            conversationId: this.conversationId,
+            requested: this.agentId,
+            agent: a?.name,
+            agentSId: a?.sId,
+            model: a?.providerId && a?.modelId ? `${a.providerId}/${a.modelId}` : undefined,
+          });
+          this.queue.push({ kind: "done" });
+          break;
+        }
         // d.type === "tool" ignored: the real tool_use comes from the MCP handler.
       }
     } catch (e) {
