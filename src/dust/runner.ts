@@ -14,6 +14,8 @@ export interface StartTurnInput {
   messages: NormalizedMessage[];
   system?: string;
   store: ConversationStore;
+  /** Stable Claude Code session id, when the client sends one (see planner.ts). */
+  sessionId?: string | null;
   clientSideMCPServerIds?: string[] | null;
   signal?: AbortSignal;
   /** When true, replay the whole transcript into a throwaway conversation and
@@ -77,6 +79,7 @@ export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
     messages,
     system,
     store,
+    sessionId,
     clientSideMCPServerIds,
     signal,
     ephemeral,
@@ -92,7 +95,7 @@ export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
   if (!ephemeral) await store.load();
   const plan = ephemeral
     ? null
-    : planTurn({ messages, system, workspaceId, agentId, lookup: (k) => store.get(k) });
+    : planTurn({ messages, system, workspaceId, agentId, sessionId, lookup: (k) => store.get(k) });
 
   let conversation: any;
   let userMessageId: string | undefined;
@@ -162,7 +165,7 @@ export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
    *  on the step cap. Only the FINAL `done` is emitted to the client; deltas from
    *  every round are streamed contiguously. */
   async function* runRounds(): AsyncGenerator<Delta> {
-    const key = ephemeral ? null : plan!.fingerprintKey;
+    const key = ephemeral ? null : plan!.storeKey;
     let stream = base;
     for (let round = 0; ; round++) {
       let last: Delta | undefined;

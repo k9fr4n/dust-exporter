@@ -46,6 +46,8 @@ export interface ParsedAnthropic {
   system: string;
   messages: NormalizedMessage[];
   stream: boolean;
+  /** Stable Claude Code session id (from metadata.user_id JSON), or null. */
+  sessionId: string | null;
 }
 
 export function parseMessagesRequest(body: unknown): ParsedAnthropic {
@@ -62,6 +64,7 @@ export function parseMessagesRequest(body: unknown): ParsedAnthropic {
     system: flattenSystem(r.data.system),
     messages,
     stream: !!r.data.stream,
+    sessionId: extractSessionId((body as any)?.metadata),
   };
 }
 

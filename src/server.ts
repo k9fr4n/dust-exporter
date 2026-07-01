@@ -111,7 +111,7 @@ export function createServer(cfg: Config): Server {
     const ctrl = new AbortController();
     req.on("close", () => ctrl.abort());
     const turn = await startTurn({
-      api, agentId, messages: parsed.messages, system: parsed.system,
+      api, agentId, messages: parsed.messages, system: parsed.system, sessionId: parsed.sessionId,
       store, clientSideMCPServerIds: tools, signal: ctrl.signal, ephemeral: cfg.ephemeral,
       titlePrefix: cfg.titlePrefix, maxContinuations: cfg.maxContinuations,
     });
