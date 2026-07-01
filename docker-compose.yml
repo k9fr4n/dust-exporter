@@ -4,7 +4,6 @@ services:
     image: dust-exporter
     command:
       - serve
-      - --client-tools
     # Host networking: the exporter binds 8787 directly on the host stack.
     # Incompatible with `ports` and `networks` (Docker ignores them in host mode).
     network_mode: host
