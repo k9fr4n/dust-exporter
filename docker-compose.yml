@@ -1,7 +1,7 @@
 services:
   dust-exporter:
-    build: .
-    image: dust-exporter
+    image: ghcr.io/k9fr4n/dust-exporter:latest
+    pull_policy: always
     command:
       - serve
     # Host networking: the exporter binds 8787 directly on the host stack.
