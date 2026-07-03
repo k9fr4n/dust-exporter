@@ -439,6 +439,22 @@ export async function handleClientToolsRequest(opts: {
   titlePrefix: string;
 }): Promise<void> {
   const { res, parsed, agentId, api, registry, titlePrefix } = opts;
+  // DIAGNOSTIC (temporary): capture the signals we'd use to key conversation
+  // continuity, so we can see how they behave across Claude Code context
+  // compaction and subagent (Task/sidechain) calls. Goal: decide whether the
+  // session id alone disambiguates conversations (drop the first-message
+  // anchor), or whether we need a compaction-stable discriminator such as the
+  // tool-set hash. Enable with DUST_PROXY_LOG_LEVEL=debug. Remove once decided.
+  const toolNames = parsed.tools.map((t) => t.name).sort();
+  log.debug("cc-session-signal", {
+    sessionId: parsed.sessionId,                 // raw metadata.user_id
+    firstUserAnchor: createHash("sha256").update(parsed.firstUserText).digest("hex").slice(0, 16),
+    firstUserHead: parsed.firstUserText.slice(0, 60),
+    toolsHash: createHash("sha256").update(toolNames.join(",")).digest("hex").slice(0, 8),
+    toolCount: toolNames.length,
+    systemHash: createHash("sha256").update(parsed.system ?? "").digest("hex").slice(0, 8),
+    isResume: parsed.isResume,
+  });
   const session = await registry.get(parsed, agentId, api, titlePrefix);
   await session.ensureMcp();
   const firstTurn = session.conversationId === null;
