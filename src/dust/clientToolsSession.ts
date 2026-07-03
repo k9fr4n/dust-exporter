@@ -19,9 +19,9 @@ import { errorMessage } from "../errors";
 import { log } from "../logger";
 import { type AnthropicTool, newMsgId, type ParsedAnthropicFull, type ToolResult } from "../protocols/anthropic";
 import { ReverseMcpTransport } from "./mcpFsServer";
-import { deleteConversation } from "./conversations";
 import { normalizeEvents } from "./events";
 import { deriveTitle, withSystem } from "./planner";
+import type { ConversationStore } from "../state/store";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const SESSION_IDLE_MS = 20 * 60 * 1000;
@@ -118,10 +118,23 @@ class Session {
     private readonly tools: AnthropicTool[],
     private readonly firstUserText: string,
     private readonly titlePrefix: string,
+    /** Store key under which this session's conversationId is persisted, so the
+     *  mapping survives idle teardown and container restarts (see registry). */
+    private readonly storeKey: string,
+    private readonly store?: ConversationStore,
   ) {}
 
   touch(): void {
     this.lastActivity = Date.now();
+  }
+
+  /** Write-through the session's conversationId so continuity survives idle
+   *  teardown and container restarts. Fire-and-forget: a persist failure only
+   *  costs a future rehydration, never the live turn. */
+  private persistConversationId(): void {
+    if (this.store && this.conversationId) {
+      void this.store.set(this.storeKey, this.conversationId);
+    }
   }
 
   async ensureMcp(): Promise<void> {
@@ -155,8 +168,9 @@ class Session {
     const context = await buildContext(this.api, this.serverId);
     const mentions = [{ configurationId: this.agentId }];
     let conversation: any;
-    let userMessageId: string;
-    if (!this.conversationId) {
+    let userMessageId: string | undefined;
+
+    const createFresh = async (): Promise<void> => {
       const res = await this.api.createConversation({
         title: this.titlePrefix ? deriveTitle(this.firstUserText, this.titlePrefix) : undefined,
         visibility: "unlisted",
@@ -166,22 +180,36 @@ class Session {
       conversation = res.value.conversation;
       userMessageId = res.value.message!.sId;
       this.conversationId = conversation.sId;
+      this.persistConversationId();
       log.info("client-tools conversation created", {
         conversationId: this.conversationId,
         title: conversation.title,
       });
+    };
+
+    if (!this.conversationId) {
+      await createFresh();
     } else {
+      // Existing (possibly rehydrated from the store) conversation: append the
+      // turn. If Dust no longer has it (deleted/expired), fall back to a fresh
+      // conversation instead of failing the whole request.
       const post = await this.api.postUserMessage({
         conversationId: this.conversationId,
         message: { content, mentions, context: context as any },
       });
-      if (post.isErr()) throw new Error(`postUserMessage failed: ${post.error.message}`);
-      userMessageId = post.value.sId;
-      const conv = await this.api.getConversation({ conversationId: this.conversationId });
-      if (conv.isErr()) throw new Error(`getConversation failed: ${conv.error.message}`);
-      conversation = conv.value;
+      if (post.isErr()) {
+        log.warn("client-tools postUserMessage failed, recreating conversation", post.error.message);
+        this.conversationId = null;
+        await createFresh();
+      } else {
+        userMessageId = post.value.sId;
+        const conv = await this.api.getConversation({ conversationId: this.conversationId });
+        if (conv.isErr()) throw new Error(`getConversation failed: ${conv.error.message}`);
+        conversation = conv.value;
+        this.persistConversationId(); // bump updatedAt so the mapping isn't LRU-evicted
+      }
     }
-    const stream = await this.api.streamAgentAnswerEvents({ conversation, userMessageId });
+    const stream = await this.api.streamAgentAnswerEvents({ conversation, userMessageId: userMessageId! });
     if (stream.isErr()) {
       const err: any = stream.error;
       throw new Error(`stream failed: ${err?.message ?? String(err)}`);
@@ -282,15 +310,23 @@ class Session {
     }
   }
 
+  /** Idle teardown: release the reverse-MCP transport (and any parked tool
+   *  calls) but KEEP the Dust conversation. Its id is persisted in the store,
+   *  so the next request for this key rehydrates and continues it rather than
+   *  starting fresh — this is what makes continuity survive long idle gaps. */
   async dispose(): Promise<void> {
     try { await this.transport?.close(); } catch { /* ignore */ }
-    if (this.conversationId) void deleteConversation(this.api, this.conversationId);
+    for (const resolve of this.parked.values()) resolve("(session closed)");
+    this.parked.clear();
   }
 }
 
 export class SessionRegistry {
   private sessions = new Map<string, Session>();
-  constructor() {
+  /** @param store persists key -> conversationId so a session evicted by the
+   *  idle sweep (or lost to a container restart) can be rehydrated and its Dust
+   *  conversation continued instead of a new one being created. */
+  constructor(private readonly store?: ConversationStore) {
     setInterval(() => this.sweep(), 5 * 60 * 1000).unref?.();
   }
   private sweep(): void {
@@ -302,17 +338,28 @@ export class SessionRegistry {
       }
     }
   }
-  get(parsed: ParsedAnthropicFull, agentId: string, api: DustAPI, titlePrefix: string): Session {
+  async get(parsed: ParsedAnthropicFull, agentId: string, api: DustAPI, titlePrefix: string): Promise<Session> {
     // Key on session id + agent + an anchor hash of the first user message, so
     // the main agent and each concurrent (sidechain) subagent — which all share
-    // one Claude Code session id — map to distinct Dust conversations.
+    // one Claude Code session id — map to distinct Dust conversations. Prefixed
+    // ("ct:") in the store to never collide with the standard-path fingerprints.
     const anchor = createHash("sha256").update(parsed.firstUserText).digest("hex").slice(0, 16);
     const key = `${parsed.sessionId}:${agentId}:${anchor}`;
+    const storeKey = `ct:${key}`;
     let s = this.sessions.get(key);
     if (!s) {
-      s = new Session(api, agentId, parsed.tools, parsed.firstUserText, titlePrefix);
+      s = new Session(api, agentId, parsed.tools, parsed.firstUserText, titlePrefix, storeKey, this.store);
+      // Rehydrate: if we still have a Dust conversation for this key, continue
+      // it. `get()` never calls Dust — the next startTurn posts to this id.
+      let rehydrated: string | undefined;
+      if (this.store) {
+        await this.store.load();
+        rehydrated = this.store.get(storeKey);
+        if (rehydrated) s.conversationId = rehydrated;
+      }
       this.sessions.set(key, s);
-      log.info("client-tools session created", { key, firstUser: parsed.firstUserText.slice(0, 50) });
+      if (rehydrated) log.info("client-tools session rehydrated", { key, conversationId: rehydrated });
+      else log.info("client-tools session created", { key, firstUser: parsed.firstUserText.slice(0, 50) });
     }
     s.touch();
     return s;
@@ -392,7 +439,7 @@ export async function handleClientToolsRequest(opts: {
   titlePrefix: string;
 }): Promise<void> {
   const { res, parsed, agentId, api, registry, titlePrefix } = opts;
-  const session = registry.get(parsed, agentId, api, titlePrefix);
+  const session = await registry.get(parsed, agentId, api, titlePrefix);
   await session.ensureMcp();
   const firstTurn = session.conversationId === null;
   if (parsed.isResume && session.hasParked()) {

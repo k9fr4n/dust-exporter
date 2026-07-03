@@ -23,7 +23,7 @@ const BODY_LIMIT = 25 * 1024 * 1024;
 
 export function createServer(cfg: Config): Server {
   const store = new ConversationStore(cfg.stateFile);
-  const registry = new SessionRegistry();
+  const registry = new SessionRegistry(store);
   let toolServerIds: string[] | null = null;
 
   async function maybeTools(api: DustAPI): Promise<string[] | null> {
