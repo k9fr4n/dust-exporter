@@ -28,21 +28,35 @@ describe("matchAgent", () => {
 });
 
 describe("modelId", () => {
-  it("underscores the display name", () =>
-    expect(modelId({ sId: "s1", name: "GPT 5.6 Sol", description: "" })).toBe("GPT_5.6_Sol"));
+  it("underscores the display name of a Claude agent", () =>
+    expect(modelId({ sId: "s1", name: "Claude Sonnet 5", description: "" })).toBe("Claude_Sonnet_5"));
   it("collapses runs of whitespace", () =>
-    expect(modelId({ sId: "s1", name: "  A  B ", description: "" })).toBe("A_B"));
-  it("falls back to the sId without a name", () =>
-    expect(modelId({ sId: "s1", name: "", description: "" })).toBe("s1"));
+    expect(modelId({ sId: "s1", name: "  Claude  B ", description: "" })).toBe("Claude_B"));
+  it("qualifies ids Claude Code's picker would drop", () =>
+    expect(modelId({ sId: "s1", name: "GPT 5.6 Sol", description: "" })).toBe("anthropic/GPT_5.6_Sol"));
+  it("qualifies the sId fallback when the agent has no name", () =>
+    expect(modelId({ sId: "s1", name: "", description: "" })).toBe("anthropic/s1"));
+  it("leaves an already-matching id unprefixed, case-insensitively", () =>
+    expect(modelId({ sId: "s1", name: "my claude helper", description: "" })).toBe("my_claude_helper"));
   it("keeps ambiguous names on their sId", () => {
     const dup: AgentInfo[] = [
       { sId: "s1", name: "Dup", description: "" },
       { sId: "s2", name: "Dup", description: "" },
-      { sId: "s3", name: "Uniq", description: "" },
+      { sId: "s3", name: "Claude_Uniq", description: "" },
     ];
     const ids = modelIds(dup);
-    expect(ids.get("s1")).toBe("s1");
-    expect(ids.get("s2")).toBe("s2");
-    expect(ids.get("s3")).toBe("Uniq");
+    expect(ids.get("s1")).toBe("anthropic/s1");
+    expect(ids.get("s2")).toBe("anthropic/s2");
+    expect(ids.get("s3")).toBe("Claude_Uniq");
+  });
+  it("round-trips every id back to its agent", () => {
+    const all: AgentInfo[] = [
+      { sId: "s1", name: "Claude Sonnet 5", description: "" },
+      { sId: "s2", name: "GPT 5.6 Sol", description: "" },
+      { sId: "s3", name: "GLM-5.2", description: "" },
+      { sId: "s4", name: "Café Définir", description: "" },
+    ];
+    const ids = modelIds(all);
+    for (const a of all) expect(matchAgent(all, ids.get(a.sId)!, null)).toBe(a.sId);
   });
 });

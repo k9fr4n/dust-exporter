@@ -7,7 +7,7 @@ import AuthService from "./auth/authService";
 import { getDustClient, resetDustClient } from "./auth/dustClient";
 import TokenStorage from "./auth/tokenStorage";
 import { loadConfig } from "./config";
-import { listAgents } from "./dust/agents";
+import { listAgents, modelIds } from "./dust/agents";
 import { errorMessage } from "./errors";
 import { createServer } from "./server";
 
@@ -112,6 +112,22 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
+async function cmdModels(): Promise<void> {
+  const api = await getDustClient();
+  if (!api) throw new Error("Not authenticated with Dust. Run `npm run login` (or `dust login`).");
+  const agents = await listAgents(api, true);
+  const ids = modelIds(agents);
+
+  const rows = agents
+    .map((a) => ({ id: ids.get(a.sId) ?? a.sId, name: a.name || "(unnamed)", sId: a.sId }))
+    .sort((x, y) => x.id.localeCompare(y.id));
+  const w = Math.max(2, ...rows.map((r) => r.id.length));
+  out(`${"id".padEnd(w)}  display name (sId)`);
+  for (const r of rows) out(`${r.id.padEnd(w)}  ${r.name} (${r.sId})`);
+  out("");
+  out(`${rows.length} agent(s). Send any id above as \`model\`.`);
+}
+
 async function cmdLogout(): Promise<void> {
   await AuthService.logout();
   resetDustClient();
@@ -127,6 +143,7 @@ function cmdHelp(): void {
   out("  serve     Start the proxy server (default)");
   out("  login     Authenticate via WorkOS device flow (shared with dust-cli)");
   out("  status    Show authentication status");
+  out("  models    List the Dust agents exposed as models");
   out("  logout    Clear the shared session");
   out("  help      Show this help");
   out("");
@@ -149,6 +166,7 @@ async function main(): Promise<void> {
     case "serve": return cmdServe(args);
     case "login": return cmdLogin(args);
     case "status": return cmdStatus();
+    case "models": return cmdModels();
     case "logout": return cmdLogout();
     case "help": case "--help": return cmdHelp();
     default:

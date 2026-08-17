@@ -60,7 +60,7 @@ describe("openai serialization", () => {
       { sId: "b", name: "Dup", description: "" },
       { sId: "c", name: "Dup", description: "" },
     ]);
-    expect(l.data.map((m: any) => m.id)).toEqual(["a", "b", "c"]);
+    expect(l.data.map((m: any) => m.id)).toEqual(["anthropic/a", "anthropic/b", "anthropic/c"]);
     expect(l.data[0].display_name).toBe("a");
   });
   it("newId is prefixed", () => expect(newId().startsWith("chatcmpl-")).toBe(true));
