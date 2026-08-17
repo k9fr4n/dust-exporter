@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type AgentInfo, matchAgent } from "../src/dust/agents";
+import { type AgentInfo, matchAgent, modelId, modelIds } from "../src/dust/agents";
 
 const agents: AgentInfo[] = [
   { sId: "claude-4.5-sonnet", name: "claude-sonnet", description: "" },
@@ -21,4 +21,28 @@ describe("matchAgent", () => {
     expect(matchAgent(agents, "cafe definir", null)).toBe("xyz789"));
   it("falls back to the default agent", () => expect(matchAgent(agents, "nope", "gpt-5")).toBe("gpt-5"));
   it("returns null when nothing matches", () => expect(matchAgent(agents, "nope", null)).toBeNull());
+  it("resolves the id advertised by GET /v1/models", () => {
+    const listed = { sId: "s1", name: "Claude Sonnet 5", description: "" };
+    expect(matchAgent([...agents, listed], modelId(listed), null)).toBe("s1");
+  });
+});
+
+describe("modelId", () => {
+  it("underscores the display name", () =>
+    expect(modelId({ sId: "s1", name: "GPT 5.6 Sol", description: "" })).toBe("GPT_5.6_Sol"));
+  it("collapses runs of whitespace", () =>
+    expect(modelId({ sId: "s1", name: "  A  B ", description: "" })).toBe("A_B"));
+  it("falls back to the sId without a name", () =>
+    expect(modelId({ sId: "s1", name: "", description: "" })).toBe("s1"));
+  it("keeps ambiguous names on their sId", () => {
+    const dup: AgentInfo[] = [
+      { sId: "s1", name: "Dup", description: "" },
+      { sId: "s2", name: "Dup", description: "" },
+      { sId: "s3", name: "Uniq", description: "" },
+    ];
+    const ids = modelIds(dup);
+    expect(ids.get("s1")).toBe("s1");
+    expect(ids.get("s2")).toBe("s2");
+    expect(ids.get("s3")).toBe("Uniq");
+  });
 });

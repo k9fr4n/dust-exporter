@@ -4,6 +4,31 @@ import { HttpError } from "../errors";
 
 export interface AgentInfo { sId: string; name: string; description: string }
 
+/** Public model id exposed by GET /v1/models: the agent display name with
+ *  whitespace collapsed to underscores ("Claude Sonnet 5" -> "Claude_Sonnet_5").
+ *  matchAgent() resolves it back because norm() drops the underscores. Falls
+ *  back to the sId when the agent has no name. */
+export function modelId(a: AgentInfo): string {
+  const n = (a.name ?? "").trim().replace(/\s+/g, "_");
+  return n || a.sId;
+}
+
+/** Model ids for a list of agents, keyed by sId. Two agents can share a display
+ *  name; those fall back to their sId so every id stays unique and resolvable. */
+export function modelIds(agents: AgentInfo[]): Map<string, string> {
+  const seen = new Map<string, number>();
+  for (const a of agents) {
+    const id = modelId(a);
+    seen.set(id, (seen.get(id) ?? 0) + 1);
+  }
+  const out = new Map<string, string>();
+  for (const a of agents) {
+    const id = modelId(a);
+    out.set(a.sId, (seen.get(id) ?? 0) > 1 ? a.sId : id);
+  }
+  return out;
+}
+
 let cache: { at: number; agents: AgentInfo[] } | null = null;
 const TTL_MS = 60_000;
 

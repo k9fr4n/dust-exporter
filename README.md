@@ -71,7 +71,11 @@ npx tsx src/index.ts serve --port 8787 --agent claude-4.5-sonnet --api-key sk-lo
 Endpoints:
 - `POST /v1/chat/completions` - OpenAI Chat Completions (stream + non-stream)
 - `POST /v1/messages` - Anthropic Messages (stream + non-stream)
-- `GET  /v1/models` - lists your Dust agents as models
+- `GET  /v1/models` - lists your Dust agents as models. Each entry's `id` is the
+  agent display name with spaces underscored (`Claude Sonnet 5` ->
+  `Claude_Sonnet_5`) and `display_name` is the name as-is; agents with no name
+  or a duplicate name are listed under their `sId` instead. Any of these ids can
+  be sent back as `model`.
 - `GET  /health`
 
 ### `model` -> agent mapping
@@ -178,9 +182,9 @@ ANTHROPIC_SMALL_FAST_MODEL=claude-4.5-haiku \
 claude
 ```
 
-Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to Dust agent sIds (see
-`GET /v1/models`). The `--agent` default catches any internal model name Claude
-Code may send.
+Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to any id listed by
+`GET /v1/models` (agent name or `sId`). The `--agent` default catches any
+internal model name Claude Code may send.
 
 With `--client-tools`, **Claude Code's own tools work**: its Read/Edit/Bash/etc.
 are bridged into the Dust agent (see below), so the agent drives them and Claude

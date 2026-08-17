@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import type { AgentInfo } from "../dust/agents";
+import { type AgentInfo, modelIds } from "../dust/agents";
 import { HttpError } from "../errors";
 import type { Delta, NormalizedMessage } from "../types";
 
@@ -118,12 +118,18 @@ export async function openaiCollect(id: string, model: string, deltas: AsyncIter
 }
 
 export function modelsList(agents: AgentInfo[]) {
+  const ids = modelIds(agents);
+  const created = nowSec();
   return {
     object: "list",
     data: agents.map((a) => ({
-      id: a.sId,
+      id: ids.get(a.sId) ?? a.sId,
+      display_name: a.name || a.sId,
+      // OpenAI/Anthropic listing fields, kept so both SDKs accept the payload.
       object: "model",
-      created: nowSec(),
+      type: "model",
+      created,
+      created_at: new Date(created * 1000).toISOString(),
       owned_by: "dust",
       name: a.name,
     })),
