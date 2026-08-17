@@ -9,7 +9,6 @@ import TokenStorage from "./auth/tokenStorage";
 import { loadConfig } from "./config";
 import { listAgents, modelIds } from "./dust/agents";
 import { errorMessage } from "./errors";
-import { claudeCodeSettings } from "./protocols/claudeCode";
 import { createServer } from "./server";
 
 type Args = Record<string, string | boolean>;
@@ -113,20 +112,11 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
-async function cmdModels(args: Args): Promise<void> {
-  const cfg = loadConfig({});
+async function cmdModels(): Promise<void> {
   const api = await getDustClient();
   if (!api) throw new Error("Not authenticated with Dust. Run `npm run login` (or `dust login`).");
   const agents = await listAgents(api, true);
   const ids = modelIds(agents);
-
-  if (args["claude-settings"]) {
-    const baseUrl =
-      typeof args["base-url"] === "string" ? args["base-url"] : `http://${cfg.host}:${cfg.port}`;
-    const scheme = args["auth-scheme"] === "x-api-key" ? "x-api-key" : "bearer";
-    out(JSON.stringify(claudeCodeSettings(agents, { baseUrl, apiKey: cfg.proxyApiKey, authScheme: scheme }), null, 2));
-    return;
-  }
 
   const rows = agents
     .map((a) => ({ id: ids.get(a.sId) ?? a.sId, name: a.name || "(unnamed)", sId: a.sId }))
@@ -168,11 +158,6 @@ function cmdHelp(): void {
   out("  --ephemeral       Delete the Dust conversation after each turn (default)");
   out('  --title-prefix <s> Prefix for created conversation titles (default "PROXY: ", "" to disable)');
   out("  --max-continuations <n> Auto-resume runs cut off by the agent step cap (default 4, 0 to disable)");
-  out("");
-  out("models options:");
-  out("  --claude-settings   Emit a Claude Code settings.json fragment (fixed model list)");
-  out("  --base-url <u>      Base URL to advertise in that fragment (default http://<host>:<port>)");
-  out("  --auth-scheme <s>   bearer (default) or x-api-key");
 }
 
 async function main(): Promise<void> {
@@ -181,7 +166,7 @@ async function main(): Promise<void> {
     case "serve": return cmdServe(args);
     case "login": return cmdLogin(args);
     case "status": return cmdStatus();
-    case "models": return cmdModels(args);
+    case "models": return cmdModels();
     case "logout": return cmdLogout();
     case "help": case "--help": return cmdHelp();
     default:

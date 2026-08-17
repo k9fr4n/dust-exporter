@@ -74,8 +74,9 @@ Endpoints:
 - `GET  /v1/models` - lists your Dust agents as models. Each entry's `id` is the
   agent display name with spaces underscored (`Claude Sonnet 5` ->
   `Claude_Sonnet_5`) and `display_name` is the name as-is; agents with no name
-  or a duplicate name are listed under their `sId` instead. Any of these ids can
-  be sent back as `model`.
+  or a duplicate name are listed under their `sId` instead. Ids that Claude
+  Code's model picker would filter out get an `anthropic/` prefix (see below).
+  Any of these ids can be sent back as `model`.
 - `GET  /health`
 
 ### `model` -> agent mapping
@@ -188,40 +189,38 @@ internal model name Claude Code may send.
 
 ### Showing your agents in Claude Code's `/model` picker
 
-`/model` does **not** list what `GET /v1/models` returns. Claude Code only calls
-that endpoint when `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` is set, and it
-then keeps only the ids matching `/(claude|anthropic)/i` — so agents named after
-other providers (`GPT_5.6_Sol`) are dropped client-side, whatever the proxy
-sends.
+`/model` only calls `GET /v1/models` when `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`
+is set, and it then keeps just the ids matching `/(claude|anthropic)/i`. That is
+why ids for agents named after other providers are `anthropic/`-prefixed
+(`anthropic/GPT_5.6_Sol`): without it the picker would hide them. `matchAgent()`
+strips the prefix, so both forms resolve.
 
-To get **every** agent in the picker, unfiltered, turn discovery off and declare
-a fixed list instead. Generate it from your live agents:
-
-```bash
-npx tsx src/index.ts models                    # what the proxy exposes
-npx tsx src/index.ts models --claude-settings   # settings.json fragment
-```
-
-The fragment (merge it into `~/.claude/settings.json`) looks like:
+In `~/.claude/settings.json`:
 
 ```json
 {
-  "inferenceProvider": "gateway",
-  "inferenceGatewayBaseUrl": "http://127.0.0.1:8787",
-  "inferenceGatewayAuthScheme": "bearer",
-  "modelDiscoveryEnabled": false,
-  "inferenceModels": [
-    { "name": "Claude_Sonnet_5", "labelOverride": "Claude Sonnet 5" },
-    { "name": "GPT_5.6_Sol", "labelOverride": "GPT 5.6 Sol" }
-  ]
+  "model": "Claude_Sonnet_5",
+  "env": {
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+    "ANTHROPIC_AUTH_TOKEN": "<proxy --api-key, if set>"
+  }
 }
 ```
 
-`--base-url` overrides the advertised URL, `--auth-scheme x-api-key` switches the
-header; the proxy's `--api-key` is emitted as `inferenceGatewayApiKey` when set.
-The list is a snapshot: re-run the command after adding agents in Dust. Keep
-`serve --agent <id>` set, since with discovery off the `sonnet`/`opus` aliases no
-longer resolve.
+The picker caches the list in `~/.claude/cache/gateway-models.json`, keyed by base
+URL, and primes it at startup: expect to relaunch `claude` once before the rows
+appear. `claude --debug` logs `[gatewayDiscovery] cached N models`.
+
+`npx tsx src/index.ts models` prints the ids to send as `model`. A model the
+picker does not list is still usable by name (`/model <id>`, `ANTHROPIC_MODEL`,
+or the `model` setting); Claude Code shows it as `Custom model (<id>)`.
+
+Do not use `availableModels` for this: it is an allowlist that filters the
+picker, it never adds entries. The `inferenceProvider` / `inferenceModels` /
+`modelDiscoveryEnabled` keys are not user-settings keys either (they belong to
+Claude Code's managed third-party config) and are ignored in
+`~/.claude/settings.json`.
 
 With `--client-tools`, **Claude Code's own tools work**: its Read/Edit/Bash/etc.
 are bridged into the Dust agent (see below), so the agent drives them and Claude
