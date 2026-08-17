@@ -7,8 +7,9 @@ import AuthService from "./auth/authService";
 import { getDustClient, resetDustClient } from "./auth/dustClient";
 import TokenStorage from "./auth/tokenStorage";
 import { loadConfig } from "./config";
-import { listAgents } from "./dust/agents";
+import { listAgents, modelIds } from "./dust/agents";
 import { errorMessage } from "./errors";
+import { claudeCodeSettings } from "./protocols/claudeCode";
 import { createServer } from "./server";
 
 type Args = Record<string, string | boolean>;
@@ -112,6 +113,31 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
+async function cmdModels(args: Args): Promise<void> {
+  const cfg = loadConfig({});
+  const api = await getDustClient();
+  if (!api) throw new Error("Not authenticated with Dust. Run `npm run login` (or `dust login`).");
+  const agents = await listAgents(api, true);
+  const ids = modelIds(agents);
+
+  if (args["claude-settings"]) {
+    const baseUrl =
+      typeof args["base-url"] === "string" ? args["base-url"] : `http://${cfg.host}:${cfg.port}`;
+    const scheme = args["auth-scheme"] === "x-api-key" ? "x-api-key" : "bearer";
+    out(JSON.stringify(claudeCodeSettings(agents, { baseUrl, apiKey: cfg.proxyApiKey, authScheme: scheme }), null, 2));
+    return;
+  }
+
+  const rows = agents
+    .map((a) => ({ id: ids.get(a.sId) ?? a.sId, name: a.name || "(unnamed)", sId: a.sId }))
+    .sort((x, y) => x.id.localeCompare(y.id));
+  const w = Math.max(2, ...rows.map((r) => r.id.length));
+  out(`${"id".padEnd(w)}  display name (sId)`);
+  for (const r of rows) out(`${r.id.padEnd(w)}  ${r.name} (${r.sId})`);
+  out("");
+  out(`${rows.length} agent(s). Send any id above as \`model\`.`);
+}
+
 async function cmdLogout(): Promise<void> {
   await AuthService.logout();
   resetDustClient();
@@ -127,6 +153,7 @@ function cmdHelp(): void {
   out("  serve     Start the proxy server (default)");
   out("  login     Authenticate via WorkOS device flow (shared with dust-cli)");
   out("  status    Show authentication status");
+  out("  models    List the Dust agents exposed as models");
   out("  logout    Clear the shared session");
   out("  help      Show this help");
   out("");
@@ -141,6 +168,11 @@ function cmdHelp(): void {
   out("  --ephemeral       Delete the Dust conversation after each turn (default)");
   out('  --title-prefix <s> Prefix for created conversation titles (default "PROXY: ", "" to disable)');
   out("  --max-continuations <n> Auto-resume runs cut off by the agent step cap (default 4, 0 to disable)");
+  out("");
+  out("models options:");
+  out("  --claude-settings   Emit a Claude Code settings.json fragment (fixed model list)");
+  out("  --base-url <u>      Base URL to advertise in that fragment (default http://<host>:<port>)");
+  out("  --auth-scheme <s>   bearer (default) or x-api-key");
 }
 
 async function main(): Promise<void> {
@@ -149,6 +181,7 @@ async function main(): Promise<void> {
     case "serve": return cmdServe(args);
     case "login": return cmdLogin(args);
     case "status": return cmdStatus();
+    case "models": return cmdModels(args);
     case "logout": return cmdLogout();
     case "help": case "--help": return cmdHelp();
     default:
