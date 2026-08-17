@@ -4,13 +4,28 @@ import { HttpError } from "../errors";
 
 export interface AgentInfo { sId: string; name: string; description: string }
 
+// Claude Code's model picker drops every id from a gateway's /v1/models that
+// does not match this pattern, so an agent named after another provider would
+// never be listed. Prefixing those with `anthropic/` keeps them visible;
+// matchAgent() strips a `provider/` prefix, so the id still resolves.
+const PICKER_KEEPS = /(claude|anthropic)/i;
+
+/** Agent display name with whitespace collapsed to underscores, or the sId when
+ *  the agent has no name. */
+function baseId(a: AgentInfo): string {
+  return (a.name ?? "").trim().replace(/\s+/g, "_") || a.sId;
+}
+
 /** Public model id exposed by GET /v1/models: the agent display name with
- *  whitespace collapsed to underscores ("Claude Sonnet 5" -> "Claude_Sonnet_5").
- *  matchAgent() resolves it back because norm() drops the underscores. Falls
- *  back to the sId when the agent has no name. */
+ *  whitespace collapsed to underscores ("Claude Sonnet 5" -> "Claude_Sonnet_5"),
+ *  `anthropic/`-prefixed when it would otherwise be hidden from Claude Code's
+ *  picker. matchAgent() resolves either form. */
 export function modelId(a: AgentInfo): string {
-  const n = (a.name ?? "").trim().replace(/\s+/g, "_");
-  return n || a.sId;
+  return qualify(baseId(a));
+}
+
+function qualify(id: string): string {
+  return PICKER_KEEPS.test(id) ? id : `anthropic/${id}`;
 }
 
 /** Model ids for a list of agents, keyed by sId. Two agents can share a display
@@ -18,13 +33,13 @@ export function modelId(a: AgentInfo): string {
 export function modelIds(agents: AgentInfo[]): Map<string, string> {
   const seen = new Map<string, number>();
   for (const a of agents) {
-    const id = modelId(a);
-    seen.set(id, (seen.get(id) ?? 0) + 1);
+    const b = baseId(a);
+    seen.set(b, (seen.get(b) ?? 0) + 1);
   }
   const out = new Map<string, string>();
   for (const a of agents) {
-    const id = modelId(a);
-    out.set(a.sId, (seen.get(id) ?? 0) > 1 ? a.sId : id);
+    const b = baseId(a);
+    out.set(a.sId, qualify((seen.get(b) ?? 0) > 1 ? a.sId : b));
   }
   return out;
 }
