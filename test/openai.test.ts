@@ -48,10 +48,20 @@ describe("openai serialization", () => {
     expect(joined).toContain('"finish_reason":"stop"');
     expect(out[out.length - 1]).toBe("data: [DONE]\n\n");
   });
-  it("models list maps sId to id", () => {
-    const l: any = modelsList([{ sId: "a", name: "A", description: "" }]);
-    expect(l.data[0].id).toBe("a");
+  it("models list exposes the display name as id", () => {
+    const l: any = modelsList([{ sId: "a", name: "Claude Sonnet 5", description: "" }]);
+    expect(l.data[0].id).toBe("Claude_Sonnet_5");
+    expect(l.data[0].display_name).toBe("Claude Sonnet 5");
     expect(l.object).toBe("list");
+  });
+  it("models list falls back to the sId for unnamed or ambiguous agents", () => {
+    const l: any = modelsList([
+      { sId: "a", name: "", description: "" },
+      { sId: "b", name: "Dup", description: "" },
+      { sId: "c", name: "Dup", description: "" },
+    ]);
+    expect(l.data.map((m: any) => m.id)).toEqual(["a", "b", "c"]);
+    expect(l.data[0].display_name).toBe("a");
   });
   it("newId is prefixed", () => expect(newId().startsWith("chatcmpl-")).toBe(true));
 });
