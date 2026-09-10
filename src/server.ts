@@ -10,7 +10,7 @@ import type { DustAPI } from "@dust-tt/client";
 import { getDustClient } from "./auth/dustClient";
 import type { Config } from "./config";
 import { listAgents, matchAgent } from "./dust/agents";
-import { handleClientToolsRequest, SessionRegistry } from "./dust/clientToolsSession";
+import { handleClientToolsRequest, handleClientToolsRequestJSON, SessionRegistry } from "./dust/clientToolsSession";
 import { startTurn } from "./dust/runner";
 import { HttpError, errorMessage } from "./errors";
 import { log } from "./logger";
@@ -98,9 +98,14 @@ export function createServer(cfg: Config): Server {
       const full = anthropic.parseMessagesFull(body);
       if (full.sessionId && full.tools.length > 0) {
         const agentId = await resolveAgentOrThrow(api, full.model);
-        beginSse(res);
-        await handleClientToolsRequest({ res, parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix });
-        res.end();
+        if (full.stream) {
+          beginSse(res);
+          await handleClientToolsRequest({ res, parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix });
+          res.end();
+        } else {
+          const message = await handleClientToolsRequestJSON({ parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix });
+          json(res, 200, message);
+        }
         return;
       }
     }
