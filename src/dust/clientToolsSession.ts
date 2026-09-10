@@ -15,7 +15,7 @@ import type { DustAPI } from "@dust-tt/client";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { errorMessage } from "../errors";
+import { errorMessage, HttpError } from "../errors";
 import { log } from "../logger";
 import { type AnthropicTool, newMsgId, type ParsedAnthropicFull, type ToolResult } from "../protocols/anthropic";
 import { ReverseMcpTransport } from "./mcpFsServer";
@@ -429,16 +429,15 @@ async function streamToolsSSE(res: ServerResponse, model: string, session: Sessi
   ev(res, "message_stop", {});
 }
 
-/** Entry point for a client-tools (passthrough) request. */
-export async function handleClientToolsRequest(opts: {
-  res: ServerResponse;
+/** Shared setup: resolve/create the session and kick off (or resume) its turn. */
+async function prepareTurn(opts: {
   parsed: ParsedAnthropicFull;
   agentId: string;
   api: DustAPI;
   registry: SessionRegistry;
   titlePrefix: string;
-}): Promise<void> {
-  const { res, parsed, agentId, api, registry, titlePrefix } = opts;
+}): Promise<Session> {
+  const { parsed, agentId, api, registry, titlePrefix } = opts;
   // DIAGNOSTIC (temporary): capture the signals we'd use to key conversation
   // continuity, so we can see how they behave across Claude Code context
   // compaction and subagent (Task/sidechain) calls. Goal: decide whether the
@@ -467,5 +466,69 @@ export async function handleClientToolsRequest(opts: {
       "(continue)";
     await session.startTurn(content, firstTurn ? parsed.system : undefined);
   }
+  return session;
+}
+
+/** Non-streaming variant: run one turn and return the full Anthropic message JSON. */
+async function collectToolsJSON(model: string, session: Session): Promise<Record<string, unknown>> {
+  const id = newMsgId();
+  const content: any[] = [];
+  let current: "text" | "thinking" | null = null;
+  const openBlock = (type: "text" | "thinking") => {
+    if (current === type) return;
+    current = type;
+    content.push(type === "thinking" ? { type: "thinking", thinking: "" } : { type: "text", text: "" });
+  };
+  const sink = {
+    onText: (t: string) => {
+      openBlock("text");
+      content[content.length - 1].text += t;
+    },
+    onReasoning: (t: string) => {
+      openBlock("thinking");
+      content[content.length - 1].thinking += t;
+    },
+    onToolUse: (tu: { id: string; name: string; input: unknown }) => {
+      current = null;
+      content.push({ type: "tool_use", id: tu.id, name: tu.name, input: tu.input ?? {} });
+    },
+  };
+  const result = await session.pump(sink);
+  if (result.stop === "error") {
+    throw new HttpError(502, result.error ?? "agent error", "api_error");
+  }
+  return {
+    id, type: "message", role: "assistant", model, content,
+    stop_reason: result.stop, stop_sequence: null,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  };
+}
+
+/** Entry point for a client-tools (passthrough) streaming request. */
+export async function handleClientToolsRequest(opts: {
+  res: ServerResponse;
+  parsed: ParsedAnthropicFull;
+  agentId: string;
+  api: DustAPI;
+  registry: SessionRegistry;
+  titlePrefix: string;
+}): Promise<void> {
+  const { res, parsed, agentId, api, registry, titlePrefix } = opts;
+  const session = await prepareTurn({ parsed, agentId, api, registry, titlePrefix });
   await streamToolsSSE(res, parsed.model, session);
+}
+
+/** Entry point for a client-tools (passthrough) non-streaming request: same
+ *  turn logic as `handleClientToolsRequest`, but returns a plain JSON message
+ *  instead of writing SSE events, matching the client's requested `stream: false`. */
+export async function handleClientToolsRequestJSON(opts: {
+  parsed: ParsedAnthropicFull;
+  agentId: string;
+  api: DustAPI;
+  registry: SessionRegistry;
+  titlePrefix: string;
+}): Promise<Record<string, unknown>> {
+  const { parsed, agentId, api, registry, titlePrefix } = opts;
+  const session = await prepareTurn({ parsed, agentId, api, registry, titlePrefix });
+  return collectToolsJSON(parsed.model, session);
 }
