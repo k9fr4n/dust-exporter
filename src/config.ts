@@ -42,7 +42,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     host: env("DUST_PROXY_HOST", "127.0.0.1"),
     port: Number(env("DUST_PROXY_PORT", "8787")),
     proxyApiKey: process.env.DUST_PROXY_API_KEY || null,
-    defaultAgent: process.env.DUST_PROXY_DEFAULT_AGENT || null,
+    defaultAgent: process.env.DUST_PROXY_DEFAULT_AGENT || "GPT_5.6_Luna",
     withTools: bool("DUST_PROXY_WITH_TOOLS"),
     // Passthrough of the client's own tools (Claude Code) into the Dust agent
     // via dynamically-registered reverse-MCP. Session-keyed (metadata.user_id).
