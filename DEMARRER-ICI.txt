@@ -22,17 +22,20 @@ pas besoin d'autre dépôt.
    DUST_CREDENTIAL_STORE=file npm run status
 
 4) LANCER LE PROXY
-   npm run serve -- --agent "OPUS" --client-tools
+   npm run serve -- --client-tools
    # écoute sur http://127.0.0.1:8787
    # la liste de tes agents (= les "modèles") :  http://127.0.0.1:8787/v1/models
+   # agent utilisé quand le modèle demandé ne correspond à aucun agent :
+   #   DUST_PROXY_DEFAULT_AGENT (sinon "GPT_5.6_Luna" par défaut)
 
 5) L'UTILISER
    • Claude Code :
        ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \
        ANTHROPIC_API_KEY=dummy \
-       ANTHROPIC_MODEL="OPUS" \
        ANTHROPIC_SMALL_FAST_MODEL="claude-haiku" \
        claude
+     (Claude Code garde le modèle choisi via /model d'une session à l'autre ;
+      dust-exporter le mappe au nom de l'agent Dust correspondant.)
      (avec --client-tools, les outils natifs de Claude Code — Read/Edit/Bash — 
       sont pilotés par ton agent Dust et s'exécutent en local.)
 
