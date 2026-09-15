@@ -8,6 +8,7 @@ export interface Config {
   defaultAgent: string | null;
   withTools: boolean;
   clientTools: boolean;
+  toolTimeoutMs: number;
   ephemeral: boolean;
   /** Prefix prepended to every Dust conversation title created by the proxy.
    *  Empty string disables custom titling (Dust auto-titles instead). */
@@ -47,6 +48,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     // Passthrough of the client's own tools (Claude Code) into the Dust agent
     // via dynamically-registered reverse-MCP. Session-keyed (metadata.user_id).
     clientTools: bool("DUST_PROXY_CLIENT_TOOLS"),
+    toolTimeoutMs: int("DUST_PROXY_TOOL_TIMEOUT_MS", 20 * 60 * 1000) || 20 * 60 * 1000,
     // Default ON: create + replay + delete each turn, so stateless clients
     // (Claude Code, OpenAI SDK) don't accumulate Dust conversations.
     ephemeral: process.env.DUST_PROXY_EPHEMERAL === undefined ? true : bool("DUST_PROXY_EPHEMERAL"),

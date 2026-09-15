@@ -12,8 +12,12 @@ function flattenBlocks(content: unknown): string {
       .map((b: any) => {
         if (typeof b === "string") return b;
         if (b?.type === "text" || b?.type === "input_text") return b.text ?? "";
+        if (b?.type === "tool_use") {
+          return `[tool_use ${b.id} ${b.name}] ${JSON.stringify(b.input ?? {})}`;
+        }
         if (b?.type === "tool_result") {
-          return typeof b.content === "string" ? b.content : flattenBlocks(b.content);
+          const text = typeof b.content === "string" ? b.content : flattenBlocks(b.content);
+          return `[tool_result ${b.tool_use_id}${b.is_error ? " ERROR" : ""}] ${text}`;
         }
         if (b?.type === "image") return "[image omitted]";
         return "";
@@ -76,6 +80,7 @@ export interface AnthropicTool {
 export interface ToolResult {
   toolUseId: string;
   content: string;
+  isError?: boolean;
 }
 export interface ParsedAnthropicFull extends ParsedAnthropic {
   /** Stable Claude Code session id (from metadata.user_id JSON), or null. */
@@ -143,7 +148,8 @@ export function parseMessagesFull(body: unknown): ParsedAnthropicFull {
       const textParts: string[] = [];
       for (const blk of lastUser.content) {
         if (blk?.type === "tool_result") {
-          toolResults.push({ toolUseId: blk.tool_use_id, content: toolResultText(blk) });
+          if (typeof blk.tool_use_id !== "string" || !blk.tool_use_id) throw new HttpError(400, "Missing tool_use_id");
+          toolResults.push({ toolUseId: blk.tool_use_id, content: toolResultText(blk), ...(blk.is_error ? { isError: true } : {}) });
         } else if (blk?.type === "text") {
           textParts.push(blk.text ?? "");
         }
@@ -248,7 +254,7 @@ export async function anthropicCollect(id: string, model: string, deltas: AsyncI
     else if (d.type === "reasoning") thinking += d.text;
     else if (d.type === "error") error = d.message;
   }
-  if (error && !text) throw new HttpError(502, error, "api_error");
+  if (error) throw new HttpError(502, error, "api_error");
   const content: any[] = [];
   if (thinking) content.push({ type: "thinking", thinking });
   content.push({ type: "text", text });

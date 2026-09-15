@@ -5,6 +5,7 @@
 //   DUST_CREDENTIAL_STORE=auto|keychain|file  (default: auto)
 //   DUST_CREDENTIAL_FILE=/custom/path.json     (file backend location)
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +74,7 @@ class FileBackend implements CredentialBackend {
   }
   private async save(data: Record<string, string>): Promise<void> {
     await fs.mkdir(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
+    const tmp = `${this.path}.${randomUUID()}.tmp`;
     const payload: CredentialFileShape = {
       schema: "dust-cli.credentials.v1",
       service: SERVICE_NAME,
@@ -115,25 +116,45 @@ function getBackend(): Promise<CredentialBackend> {
   return backendPromise;
 }
 
+let writes: Promise<unknown> = Promise.resolve();
+function writeLocked<T>(fn: (b: CredentialBackend) => Promise<T>): Promise<T> {
+  const operation = writes.then(async () => fn(await getBackend()));
+  writes = operation.catch(() => {});
+  return operation;
+}
+async function save(b: CredentialBackend, access: string, refresh: string): Promise<void> {
+  await b.set(KEYS.ACCESS_TOKEN, access);
+  await b.set(KEYS.REFRESH_TOKEN, refresh);
+}
+async function clear(b: CredentialBackend): Promise<void> {
+  for (const key of Object.values(KEYS)) await b.delete(key);
+}
+
 export const TokenStorage = {
-  async saveTokens(accessToken: string, refreshToken: string) {
-    const b = await getBackend();
-    await b.set(KEYS.ACCESS_TOKEN, accessToken);
-    await b.set(KEYS.REFRESH_TOKEN, refreshToken);
+  saveTokens(accessToken: string, refreshToken: string) {
+    return writeLocked((b) => save(b, accessToken, refreshToken));
+  },
+  saveTokensIfRefreshToken(expected: string, access: string, refresh: string) {
+    return writeLocked(async (b) => {
+      if (await b.get(KEYS.REFRESH_TOKEN) !== expected) return false;
+      await save(b, access, refresh);
+      return true;
+    });
+  },
+  clearTokensIfRefreshToken(expected: string) {
+    return writeLocked(async (b) => {
+      if (await b.get(KEYS.REFRESH_TOKEN) !== expected) return false;
+      await clear(b);
+      return true;
+    });
   },
   async getAccessToken() { return (await getBackend()).get(KEYS.ACCESS_TOKEN); },
   async getRefreshToken() { return (await getBackend()).get(KEYS.REFRESH_TOKEN); },
-  async saveWorkspaceId(id: string) { await (await getBackend()).set(KEYS.WORKSPACE, id); },
+  saveWorkspaceId(id: string) { return writeLocked((b) => b.set(KEYS.WORKSPACE, id)); },
   async getWorkspaceId() { return (await getBackend()).get(KEYS.WORKSPACE); },
-  async saveRegion(region: string) { await (await getBackend()).set(KEYS.REGION, region); },
+  saveRegion(region: string) { return writeLocked((b) => b.set(KEYS.REGION, region)); },
   async getRegion() { return (await getBackend()).get(KEYS.REGION); },
-  async clearTokens() {
-    const b = await getBackend();
-    await b.delete(KEYS.ACCESS_TOKEN);
-    await b.delete(KEYS.REFRESH_TOKEN);
-    await b.delete(KEYS.WORKSPACE);
-    await b.delete(KEYS.REGION);
-  },
+  clearTokens() { return writeLocked(clear); },
   async getBackendName() { return (await getBackend()).name; },
 };
 

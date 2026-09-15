@@ -106,7 +106,7 @@ export async function openaiCollect(id: string, model: string, deltas: AsyncIter
     if (d.type === "text") content += d.text;
     else if (d.type === "error") error = d.message;
   }
-  if (error && !content) throw new HttpError(502, error, "api_error");
+  if (error) throw new HttpError(502, error, "api_error");
   return {
     id,
     object: "chat.completion",

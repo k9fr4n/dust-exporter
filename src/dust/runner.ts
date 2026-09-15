@@ -6,6 +6,7 @@ import type { ConversationStore } from "../state/store";
 import type { Delta, NormalizedMessage } from "../types";
 import { deleteConversation } from "./conversations";
 import { normalizeEvents } from "./events";
+import { cancelRecovered, conversationMissing, Generation } from "./generation";
 import { deriveTitle, planTurn, renderTranscript } from "./planner";
 
 export interface StartTurnInput {
@@ -57,206 +58,99 @@ async function buildContext(api: DustAPI, mcpIds?: string[] | null) {
 }
 
 async function approve(api: DustAPI, ev: any): Promise<void> {
-  try {
-    await api.validateAction({
-      conversationId: ev.conversationId,
-      messageId: ev.messageId,
-      actionId: ev.actionId,
-      approved: "approved",
-    });
-  } catch (e) {
-    log.warn("validateAction failed", errorMessage(e));
-  }
+  const result = await api.validateAction({ conversationId: ev.conversationId, messageId: ev.messageId, actionId: ev.actionId, approved: "approved" });
+  if (result.isErr()) throw new HttpError(502, `validateAction failed: ${result.error.message}`, "api_error");
 }
 
 /** Run one agent turn. Performs all setup eagerly so setup failures surface as
  *  thrown HttpErrors (mapped to a proper status BEFORE any SSE byte is sent);
  *  the returned `deltas` generator then streams the answer. */
 export async function startTurn(input: StartTurnInput): Promise<StartedTurn> {
-  const {
-    api,
-    agentId,
-    messages,
-    system,
-    store,
-    sessionId,
-    clientSideMCPServerIds,
-    signal,
-    ephemeral,
-    titlePrefix,
-  } = input;
-  const maxContinuations = Math.max(0, input.maxContinuations ?? 0);
-  const workspaceId = api.workspaceId();
-  const context = await buildContext(api, clientSideMCPServerIds);
-  const mentions = [{ configurationId: agentId }];
-  const firstUserContent = messages.find((m) => m.role === "user")?.content ?? "";
-  const title = titlePrefix ? deriveTitle(firstUserContent, titlePrefix) : undefined;
-
+  const { api, agentId, messages, system, store, sessionId, clientSideMCPServerIds, signal, ephemeral, titlePrefix } = input;
+  signal?.throwIfAborted();
   if (!ephemeral) await store.load();
-  const plan = ephemeral
-    ? null
-    : planTurn({ messages, system, workspaceId, agentId, sessionId, lookup: (k) => store.get(k) });
-
-  let conversation: any;
-  let userMessageId: string | undefined;
-
-  const createFresh = async (content: string) => {
-    const res = await api.createConversation({
-      title,
-      visibility: "unlisted",
-      message: { content, mentions, context: context as any },
-    } as any);
-    if (res.isErr()) {
-      throw new HttpError(502, `createConversation failed: ${res.error.message}`, "api_error");
+  const plan = ephemeral ? null : planTurn({ messages, system, workspaceId: api.workspaceId(), agentId, sessionId, lookup: (key) => store.get(key) });
+  let release = () => {};
+  if (plan) {
+    try { release = store.acquire(plan.storeKey); }
+    catch { throw new HttpError(409, "Another request is using this conversation", "api_error"); }
+  }
+  let conversationId = plan?.conversationId ?? "";
+  const generation = () => new Generation(api, async (active) => {
+    if (plan && conversationId) await store.set(plan.storeKey, conversationId, active);
+  });
+  let run = generation();
+  const abort = () => { void run.cancel().catch((e) => log.error("Dust cancellation failed", errorMessage(e))); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  const cleanup = async () => {
+    signal?.removeEventListener("abort", abort);
+    try { await run.cancel(); }
+    finally {
+      if (ephemeral && conversationId) await deleteConversation(api, conversationId);
+      release();
     }
-    if (!res.value.conversation || !res.value.message) {
-      throw new HttpError(502, "createConversation returned no message", "api_error");
-    }
-    conversation = res.value.conversation;
-    userMessageId = res.value.message.sId;
   };
-
-  if (plan && plan.mode === "continue" && plan.conversationId) {
-    const post = await api.postUserMessage({
-      conversationId: plan.conversationId,
-      message: { content: plan.contentToSend, mentions, context: context as any },
-      signal,
-    });
-    if (post.isErr()) {
-      log.warn("postUserMessage failed, recreating conversation", post.error.message);
-      await createFresh(renderTranscript(messages, system));
-    } else {
-      userMessageId = post.value.sId;
-      const conv = await api.getConversation({ conversationId: plan.conversationId });
-      if (conv.isErr()) {
-        throw new HttpError(502, `getConversation failed: ${conv.error.message}`, "api_error");
-      }
-      conversation = conv.value;
+  try {
+    if (plan && conversationId && store.active(plan.storeKey)) {
+      await cancelRecovered(api, conversationId, store.active(plan.storeKey)!);
+      await store.set(plan.storeKey, conversationId);
     }
-  } else {
-    // Ephemeral (or unknown prefix): replay the whole transcript into a fresh conversation.
-    await createFresh(plan ? plan.contentToSend : renderTranscript(messages, system));
-  }
-
-  const stream = await api.streamAgentAnswerEvents({
-    conversation,
-    userMessageId: userMessageId!,
-    signal,
-  });
-  if (stream.isErr()) {
-    const err: any = stream.error;
-    throw new HttpError(502, `stream failed: ${err?.message ?? String(err)}`, "api_error");
-  }
-
-  const conversationId = conversation.sId as string;
-  const base = normalizeEvents(stream.value.eventStream, {
-    conversationId,
-    onApprove: (ev) => approve(api, ev),
-  });
-
-  // When a run is cut off by `maxStepsPerRun`, we post this follow-up on the
-  // SAME (stateful) conversation to resume with a fresh step budget. No replay:
-  // the server keeps the full context.
-  const CONTINUE_MSG =
-    "Continue exactly where you left off, picking up the previous task. " +
-    "Do not restart or repeat work already completed.";
-
-  /** Drive the run, transparently chaining continuation runs when Dust truncates
-   *  on the step cap. Only the FINAL `done` is emitted to the client; deltas from
-   *  every round are streamed contiguously. */
-  async function* runRounds(): AsyncGenerator<Delta> {
-    const key = ephemeral ? null : plan!.storeKey;
-    let stream = base;
-    for (let round = 0; ; round++) {
-      let last: Delta | undefined;
-      for await (const d of stream) {
-        if (d.type === "done") {
-          last = d;
-          break;
-        }
-        yield d;
-      }
-      if (last?.type === "done") {
-        const a = last.agent;
-        log.info("turn resolved", {
-          conversationId,
-          requested: agentId,
-          agent: a?.name,
-          agentSId: a?.sId,
-          model: a?.providerId && a?.modelId ? `${a.providerId}/${a.modelId}` : undefined,
-        });
-      }
-      if (key && last?.type === "done") await store.set(key, conversationId);
-
-      // Stop unless the run was step-capped AND we still have rounds left.
-      if (last?.type !== "done" || last.finishReason !== "max_steps" || round >= maxContinuations) {
-        if (last) yield last;
-        return;
-      }
-
-      log.info("auto-continue: run hit step cap, resuming", {
-        round: round + 1,
-        of: maxContinuations,
-        conversationId,
-        stepsUsed: last.stepsUsed,
-        maxSteps: last.maxSteps,
-      });
-
-      const post = await api.postUserMessage({
-        conversationId,
-        message: { content: CONTINUE_MSG, mentions, context: context as any },
-        signal,
-      });
+    const context = await buildContext(api, clientSideMCPServerIds);
+    const mentions = [{ configurationId: agentId }];
+    const firstUser = messages.find((m) => m.role === "user")?.content ?? "";
+    const title = titlePrefix ? deriveTitle(firstUser, titlePrefix) : undefined;
+    const createFresh = async () => {
+      run.signal.throwIfAborted();
+      const result = await api.createConversation({ title, visibility: "unlisted", message: {
+        content: renderTranscript(messages, system), mentions, context: context as any,
+      } } as any);
+      if (result.isErr()) throw new HttpError(502, `createConversation failed: ${result.error.message}`, "api_error");
+      if (!result.value.conversation || !result.value.message) throw new HttpError(502, "Dust returned no conversation/message", "api_error");
+      conversationId = result.value.conversation.sId;
+      return run.open(result.value.conversation, result.value.message.sId);
+    };
+    let events: AsyncIterable<any>;
+    run.signal.throwIfAborted();
+    if (plan?.mode === "continue" && conversationId) {
+      const post = await api.postUserMessage({ conversationId, message: { content: plan.contentToSend, mentions, context: context as any } });
       if (post.isErr()) {
-        log.warn("auto-continue postUserMessage failed", post.error.message);
-        yield last;
-        return;
-      }
-      const conv = await api.getConversation({ conversationId });
-      if (conv.isErr()) {
-        log.warn("auto-continue getConversation failed", conv.error.message);
-        yield last;
-        return;
-      }
-      conversation = conv.value;
-      const next = await api.streamAgentAnswerEvents({
-        conversation,
-        userMessageId: post.value.sId,
-        signal,
-      });
-      if (next.isErr()) {
-        const err: any = next.error;
-        log.warn("auto-continue stream failed", err?.message ?? String(err));
-        yield last;
-        return;
-      }
-      // Visual separator between chained runs.
-      yield { type: "text", text: "\n" };
-      stream = normalizeEvents(next.value.eventStream, {
-        conversationId,
-        onApprove: (ev) => approve(api, ev),
-      });
-    }
-  }
+        if (!conversationMissing(post.error)) throw new HttpError(502, `postUserMessage failed: ${post.error.message}`, "api_error");
+        events = await createFresh();
+      } else events = await run.open({ sId: conversationId, content: [] }, post.value.sId);
+    } else events = await createFresh();
 
-  async function* wrap(): AsyncGenerator<Delta> {
-    if (ephemeral) {
+    async function* rounds(): AsyncGenerator<Delta> {
       try {
-        yield* runRounds();
-      } finally {
-        // Clean up the throwaway conversation however the stream ended.
-        void deleteConversation(api, conversationId);
-      }
-    } else {
-      yield* runRounds();
+        for (let round = 0; ; round++) {
+          let last: Extract<Delta, { type: "done" }> | undefined;
+          for await (const delta of normalizeEvents(events, { conversationId, onApprove: (ev) => {
+            run.signal.throwIfAborted(); return approve(api, ev);
+          } })) {
+            if (delta.type === "done") last = delta;
+            else yield delta;
+          }
+          if (!last) return;
+          log.info("turn resolved", { conversationId, requested: agentId, agent: last.agent?.name });
+          if (last.finishReason !== "max_steps" || round >= Math.max(0, input.maxContinuations ?? 0)) {
+            yield last;
+            return;
+          }
+          signal?.throwIfAborted();
+          run = generation();
+          const post = await api.postUserMessage({ conversationId, message: {
+            content: "Continue exactly where you left off. Do not restart or repeat work already completed.", mentions, context: context as any,
+          } });
+          if (post.isErr()) throw new HttpError(502, `Continuation failed: ${post.error.message}`, "api_error");
+          events = await run.open({ sId: conversationId, content: [] }, post.value.sId);
+          yield { type: "text", text: "\n" };
+        }
+      } finally { await cleanup(); }
     }
+    log.info("turn started", { conversationId, agentId, mode: ephemeral ? "ephemeral" : plan!.mode });
+    return { conversationId, deltas: rounds() };
+  } catch (e) {
+    try { await cleanup(); } catch (cleanupError) { log.error("Dust cleanup failed", errorMessage(cleanupError)); }
+    throw e;
   }
-
-  log.info("turn started", {
-    mode: ephemeral ? "ephemeral" : plan!.mode,
-    replay: ephemeral ? true : plan!.isReplay,
-    conversationId,
-    agentId,
-  });
-  return { conversationId, deltas: wrap() };
 }

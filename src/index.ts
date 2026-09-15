@@ -46,6 +46,18 @@ async function cmdServe(args: Args): Promise<void> {
 
   const authed = await AuthService.isAuthenticated();
   const server = createServer(cfg);
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    const deadline = setTimeout(() => { process.stderr.write("Shutdown timed out; persisted runs will be recovered on restart\n"); process.exit(1); }, 20_000);
+    deadline.unref();
+    void server.shutdown().then(() => { clearTimeout(deadline); process.exit(0); }, (e) => {
+      process.stderr.write(`Shutdown failed: ${errorMessage(e)}\n`); process.exit(1);
+    });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
   server.listen(cfg.port, cfg.host, () => {
     out(`dust-exporter listening on http://${cfg.host}:${cfg.port}`);
     out(`  OpenAI:    POST http://${cfg.host}:${cfg.port}/v1/chat/completions`);

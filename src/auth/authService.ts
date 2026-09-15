@@ -22,9 +22,9 @@ export interface DeviceCode {
   interval: number;
 }
 
-export const AuthService = {
-  /** Refresh the access token using the stored refresh token (WorkOS). */
-  async refreshTokens(): Promise<boolean> {
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function performRefresh(): Promise<boolean> {
     const cfg = loadConfig();
     const refreshToken = await TokenStorage.getRefreshToken();
     if (!refreshToken) return false;
@@ -38,13 +38,23 @@ export const AuthService = {
       }),
     });
     if (!res.ok) {
-      if (res.status === 400 || res.status === 401) await TokenStorage.clearTokens();
+      if (res.status === 400 || res.status === 401) {
+        const cleared = await TokenStorage.clearTokensIfRefreshToken(refreshToken);
+        if (!cleared) return !!(await TokenStorage.getAccessToken());
+      }
       log.warn("token refresh failed", res.status);
       return false;
     }
     const data = (await res.json()) as { access_token: string; refresh_token: string };
-    await TokenStorage.saveTokens(data.access_token, data.refresh_token);
-    return true;
+    await TokenStorage.saveTokensIfRefreshToken(refreshToken, data.access_token, data.refresh_token);
+    return !!(await TokenStorage.getAccessToken());
+  }
+
+export const AuthService = {
+  /** Refresh the access token using the stored refresh token (WorkOS). */
+  async refreshTokens(): Promise<boolean> {
+    if (!refreshInFlight) refreshInFlight = performRefresh().finally(() => { refreshInFlight = null; });
+    return refreshInFlight;
   },
 
   /** Returns a usable access token, refreshing proactively when close to expiry. */
