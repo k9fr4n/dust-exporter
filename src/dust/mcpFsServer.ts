@@ -21,6 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class ReverseMcpTransport implements Transport {
   private running = false;
+  private closed = false;
   private serverId: string | null = null;
   private lastEventId: string | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
@@ -39,16 +40,18 @@ export class ReverseMcpTransport implements Transport {
   async start(): Promise<void> {
     const reg = await this.api.registerMCPServer({ serverName: this.serverName });
     if (reg.isErr()) throw new Error(`registerMCPServer failed: ${reg.error.message}`);
+    if (this.closed) throw new Error("MCP transport closed during registration");
     this.serverId = reg.value.serverId;
     this.onServerId(this.serverId);
-    this.heartbeat = setInterval(async () => {
-      if (!this.serverId) return;
+    this.heartbeat = setInterval(() => { void (async () => {
+      if (!this.serverId || this.closed) return;
       const r = await this.api.heartbeatMCPServer({ serverId: this.serverId });
       if (r.isErr() || !r.value.success) {
         const re = await this.api.registerMCPServer({ serverName: this.serverName });
-        if (re.isOk()) { this.serverId = re.value.serverId; this.onServerId(this.serverId); }
+        if (re.isOk() && !this.closed) { this.serverId = re.value.serverId; this.onServerId(this.serverId); }
       }
-    }, HEARTBEAT_MS);
+    })().catch((e) => log.warn("MCP heartbeat failed", e instanceof Error ? e.message : String(e))); }, HEARTBEAT_MS);
+    this.heartbeat.unref?.();
     this.running = true;
     void this.readLoop();
   }
@@ -60,6 +63,7 @@ export class ReverseMcpTransport implements Transport {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     this.running = false;
     this.abort?.abort();
     if (this.heartbeat) clearInterval(this.heartbeat);
@@ -74,10 +78,12 @@ export class ReverseMcpTransport implements Transport {
           lastEventId: this.lastEventId,
         });
         if (conn.isErr()) throw new Error(conn.error.message);
+        if (!this.running) break;
         this.abort = new AbortController();
         const res = await fetch(conn.value.url, { headers: conn.value.headers, signal: this.abort.signal });
         if (!res.ok || !res.body) throw new Error(`SSE failed: ${res.status}`);
         const reader = res.body.getReader();
+        try {
         const dec = new TextDecoder();
         let buf = "";
         while (this.running) {
@@ -96,6 +102,10 @@ export class ReverseMcpTransport implements Transport {
               if (parsed.data) this.onmessage?.(parsed.data);
             } catch { /* ignore keep-alives */ }
           }
+        }
+        } finally {
+          try { await reader.cancel(); } catch { /* disconnected */ }
+          reader.releaseLock();
         }
       } catch (e) {
         if (!this.running) break;

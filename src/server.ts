@@ -12,6 +12,7 @@ import type { Config } from "./config";
 import { listAgents, matchAgent } from "./dust/agents";
 import { handleClientToolsRequest, handleClientToolsRequestJSON, SessionRegistry } from "./dust/clientToolsSession";
 import { startTurn } from "./dust/runner";
+import { cancelRecovered } from "./dust/generation";
 import { HttpError, errorMessage } from "./errors";
 import { log } from "./logger";
 import * as anthropic from "./protocols/anthropic";
@@ -21,10 +22,13 @@ import { ConversationStore } from "./state/store";
 type Flavor = "openai" | "anthropic";
 const BODY_LIMIT = 25 * 1024 * 1024;
 
-export function createServer(cfg: Config): Server {
+export interface ProxyServer extends Server { shutdown(): Promise<void> }
+
+export function createServer(cfg: Config): ProxyServer {
   const store = new ConversationStore(cfg.stateFile);
-  const registry = new SessionRegistry(store);
+  const registry = new SessionRegistry(store, cfg.toolTimeoutMs);
   let toolServerIds: string[] | null = null;
+  let recovery: Promise<void> | null = null;
 
   async function maybeTools(api: DustAPI): Promise<string[] | null> {
     if (!cfg.withTools) return null;
@@ -44,6 +48,16 @@ export function createServer(cfg: Config): Server {
         "authentication_error",
       );
     }
+    if (!recovery) {
+      recovery = (async () => {
+        await store.load();
+        for (const entry of store.recoveries()) {
+          await cancelRecovered(api, entry.conversationId, entry.active);
+          await store.set(entry.key, entry.conversationId);
+        }
+      })().catch((e) => { recovery = null; throw e; });
+    }
+    await recovery;
     return api;
   }
 
@@ -61,16 +75,15 @@ export function createServer(cfg: Config): Server {
     json(res, 200, openai.modelsList(await listAgents(api, true)));
   }
 
-  async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleChat(req: IncomingMessage, res: ServerResponse, signal: AbortSignal): Promise<void> {
     const parsed = openai.parseChatRequest(await readJson(req));
     const api = await clientOrThrow();
     const agentId = await resolveAgentOrThrow(api, parsed.model);
     const tools = await maybeTools(api);
-    const ctrl = new AbortController();
-    req.on("close", () => ctrl.abort());
+    signal.throwIfAborted();
     const turn = await startTurn({
       api, agentId, messages: parsed.messages, system: parsed.system,
-      store, clientSideMCPServerIds: tools, signal: ctrl.signal, ephemeral: cfg.ephemeral,
+      store, clientSideMCPServerIds: tools, signal, ephemeral: cfg.ephemeral,
       titlePrefix: cfg.titlePrefix, maxContinuations: cfg.maxContinuations,
     });
     const id = openai.newId();
@@ -88,9 +101,10 @@ export function createServer(cfg: Config): Server {
     json(res, 200, { input_tokens: anthropic.estimateInputTokens(parsed) });
   }
 
-  async function handleMessages(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleMessages(req: IncomingMessage, res: ServerResponse, signal: AbortSignal): Promise<void> {
     const body = await readJson(req);
     const api = await clientOrThrow();
+    signal.throwIfAborted();
 
     // Client-tools passthrough: when enabled and the request carries a session
     // id + its own tools (Claude Code), bridge those tools into the Dust agent.
@@ -100,10 +114,10 @@ export function createServer(cfg: Config): Server {
         const agentId = await resolveAgentOrThrow(api, full.model);
         if (full.stream) {
           beginSse(res);
-          await handleClientToolsRequest({ res, parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix });
+          await handleClientToolsRequest({ res, parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix, signal });
           res.end();
         } else {
-          const message = await handleClientToolsRequestJSON({ parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix });
+          const message = await handleClientToolsRequestJSON({ parsed: full, agentId, api, registry, titlePrefix: cfg.titlePrefix, signal });
           json(res, 200, message);
         }
         return;
@@ -113,11 +127,10 @@ export function createServer(cfg: Config): Server {
     const parsed = anthropic.parseMessagesRequest(body);
     const agentId = await resolveAgentOrThrow(api, parsed.model);
     const tools = await maybeTools(api);
-    const ctrl = new AbortController();
-    req.on("close", () => ctrl.abort());
+    signal.throwIfAborted();
     const turn = await startTurn({
       api, agentId, messages: parsed.messages, system: parsed.system, sessionId: parsed.sessionId,
-      store, clientSideMCPServerIds: tools, signal: ctrl.signal, ephemeral: cfg.ephemeral,
+      store, clientSideMCPServerIds: tools, signal, ephemeral: cfg.ephemeral,
       titlePrefix: cfg.titlePrefix, maxContinuations: cfg.maxContinuations,
     });
     const id = anthropic.newMsgId();
@@ -130,7 +143,7 @@ export function createServer(cfg: Config): Server {
     }
   }
 
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, signal: AbortSignal): Promise<void> {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const path = url.pathname;
     cors(res);
@@ -146,24 +159,53 @@ export function createServer(cfg: Config): Server {
     }
     try {
       if (req.method === "GET" && path === "/v1/models") return await handleModels(res);
-      if (req.method === "POST" && path === "/v1/chat/completions") return await handleChat(req, res);
+      if (req.method === "POST" && path === "/v1/chat/completions") return await handleChat(req, res, signal);
       if (req.method === "POST" && path === "/v1/messages/count_tokens") return await handleCountTokens(req, res);
-      if (req.method === "POST" && path === "/v1/messages") return await handleMessages(req, res);
+      if (req.method === "POST" && path === "/v1/messages") return await handleMessages(req, res, signal);
       sendError(res, flavor, new HttpError(404, `Not found: ${req.method} ${path}`, "not_found"));
     } catch (e) {
+      if (res.destroyed) return;
       const he = e instanceof HttpError ? e : new HttpError(500, errorMessage(e), "server_error");
       if (!res.headersSent) sendError(res, flavor, he);
       else { try { writeSseError(res, flavor, he.message); res.end(); } catch { /* socket gone */ } }
     }
   }
 
-  return createHttpServer((req, res) => {
-    handle(req, res).catch((e) => {
+  const controllers = new Set<AbortController>();
+  const tasks = new Set<Promise<void>>();
+  const server = createHttpServer((req, res) => {
+    const controller = new AbortController();
+    controllers.add(controller);
+    const abort = () => controller.abort();
+    const close = () => { if (!res.writableFinished) abort(); };
+    res.once("close", close);
+    req.once("aborted", abort);
+    const task = handle(req, res, controller.signal).catch((e) => {
       log.error("unhandled", errorMessage(e));
-      if (!res.headersSent) sendError(res, "openai", new HttpError(500, errorMessage(e), "server_error"));
-      else try { res.end(); } catch { /* ignore */ }
+      if (!res.destroyed && !res.headersSent) sendError(res, "openai", new HttpError(500, errorMessage(e), "server_error"));
+      else if (!res.destroyed) res.end();
+    }).finally(() => {
+      res.removeListener("close", close);
+      req.removeListener("aborted", abort);
+      controllers.delete(controller);
+      tasks.delete(task);
     });
-  });
+    tasks.add(task);
+  }) as ProxyServer;
+  let shutdown: Promise<void> | undefined;
+  server.shutdown = () => shutdown ??= (async () => {
+    for (const controller of controllers) controller.abort();
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    try { await registry.close(); }
+    finally {
+      await Promise.allSettled([...tasks]);
+      server.closeAllConnections();
+      await closed;
+      await store.flush();
+    }
+  })();
+  server.once("close", () => { void registry.close().catch((e) => log.error("session shutdown failed", errorMessage(e))); });
+  return server;
 }
 
 // --- helpers ---
@@ -221,6 +263,7 @@ function readJson(req: IncomingMessage): Promise<unknown> {
       if (!raw) { resolve({}); return; }
       try { resolve(JSON.parse(raw)); } catch { reject(new HttpError(400, "Invalid JSON body")); }
     });
+    req.on("aborted", () => reject(new HttpError(400, "Request interrupted")));
     req.on("error", reject);
   });
 }

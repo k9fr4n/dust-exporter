@@ -113,12 +113,12 @@ export async function* normalizeEvents(
         yield done(finishInfo(ev.message), agentInfo(ev.message));
         return;
       case "agent_generation_cancelled":
-        // User/abort-initiated cancellation: never a step-cap, do not continue.
-        yield done();
+        // Cancellation is terminal, but is not a successful answer.
+        yield { type: "error", message: "Dust generation cancelled" };
         return;
       default:
         break;
     }
   }
-  yield done();
+  yield { type: "error", message: "Dust event stream ended without a terminal event" };
 }

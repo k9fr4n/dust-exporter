@@ -72,13 +72,12 @@ describe("normalizeEvents", () => {
     expect(done.stepsUsed).toBe(4);
     expect(done.maxSteps).toBe(64);
   });
-  it("treats agent_generation_cancelled as a plain stop (never max_steps)", async () => {
+  it("reports cancellation as an error, never successful completion", async () => {
     const evs = gen([
       { type: "agent_generation_cancelled", message: { configuration: { maxStepsPerRun: 1 }, actions: [{ step: 5 }] } },
     ]);
     const out = await collect(normalizeEvents(evs, { conversationId: "c", onApprove: async () => {} }));
-    const done = out.find((d) => d.type === "done") as any;
-    expect(done.finishReason).toBe("stop");
+    expect(out).toEqual([{ type: "error", message: "Dust generation cancelled" }]);
   });
   it("emits error and stops on agent_error", async () => {
     const evs = gen([
@@ -91,4 +90,9 @@ describe("normalizeEvents", () => {
     expect(err.message).toBe("boom");
     expect(out.find((d) => d.type === "done")).toBeUndefined();
   });
+});
+
+it("does not report success when the SSE stream ends without a terminal event", async () => {
+  const out = await collect(normalizeEvents(gen([{ type: "generation_tokens", classification: "tokens", text: "partial" }]), { conversationId: "c", onApprove: async () => {} }));
+  expect(out.at(-1)).toEqual({ type: "error", message: "Dust event stream ended without a terminal event" });
 });

@@ -1,56 +1,74 @@
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
 
-import { log } from "../logger";
+import type { ActiveGeneration } from "../dust/generation";
 
-interface Entry { conversationId: string; updatedAt: number }
+interface Entry { conversationId: string; updatedAt: number; active?: ActiveGeneration }
 interface FileShape { schema: "dust-exporter.state.v1"; entries: Record<string, Entry> }
 
-/** Persistent fingerprint -> conversationId map. Write-through JSON with an
- *  in-memory cache. Used to map a stateless client history onto a stateful
- *  Dust conversation. Safe to lose: a miss simply creates a fresh conversation. */
+/** One writer per proxy process. Legacy entries without active runs still load. */
 export class ConversationStore {
   private entries: Record<string, Entry> = {};
-  private loaded = false;
+  private loading: Promise<void> | null = null;
+  private busy = new Set<string>();
+  private writes: Promise<void> = Promise.resolve();
   constructor(private readonly path: string, private readonly maxEntries = 5000) {}
 
-  async load(): Promise<void> {
-    if (this.loaded) return;
+  load(): Promise<void> {
+    if (!this.loading) this.loading = this.read().catch((e) => { this.loading = null; throw e; });
+    return this.loading;
+  }
+
+  private async read(): Promise<void> {
     try {
-      const raw = await fs.readFile(this.path, "utf-8");
-      const parsed = JSON.parse(raw) as FileShape;
-      if (parsed?.schema === "dust-exporter.state.v1") this.entries = parsed.entries || {};
+      const parsed = JSON.parse(await fs.readFile(this.path, "utf-8")) as FileShape;
+      if (parsed?.schema !== "dust-exporter.state.v1" || !parsed.entries) throw new Error("Invalid conversation state file");
+      this.entries = parsed.entries;
     } catch (err: any) {
-      if (err?.code !== "ENOENT") log.warn("state load failed", err?.message);
+      // A broken state file must not silently fork every conversation.
+      if (err?.code !== "ENOENT") throw err;
     }
-    this.loaded = true;
   }
 
-  get(key: string): string | undefined {
-    return this.entries[key]?.conversationId;
+  acquire(key: string): () => void {
+    if (this.busy.has(key)) throw new Error("A request is already using this conversation");
+    this.busy.add(key);
+    return () => { this.busy.delete(key); };
   }
 
-  async set(key: string, conversationId: string): Promise<void> {
-    this.entries[key] = { conversationId, updatedAt: Date.now() };
-    await this.persist();
+  get(key: string): string | undefined { return this.entries[key]?.conversationId; }
+  active(key: string): ActiveGeneration | undefined { return this.entries[key]?.active; }
+  recoveries(): { key: string; conversationId: string; active: ActiveGeneration }[] {
+    return Object.entries(this.entries).flatMap(([key, entry]) => entry.active
+      ? [{ key, conversationId: entry.conversationId, active: structuredClone(entry.active) }] : []);
   }
+
+  set(key: string, conversationId: string, active?: ActiveGeneration): Promise<void> {
+    const write = this.writes.then(async () => {
+      await this.load();
+      this.entries[key] = { conversationId, updatedAt: Date.now(), ...(active ? { active: structuredClone(active) } : {}) };
+      await this.persist();
+    });
+    this.writes = write.catch(() => {});
+    return write;
+  }
+
+  async flush(): Promise<void> { await this.writes; }
 
   private async persist(): Promise<void> {
-    const keys = Object.keys(this.entries);
-    if (keys.length > this.maxEntries) {
-      keys
-        .sort((a, b) => this.entries[a].updatedAt - this.entries[b].updatedAt)
-        .slice(0, keys.length - this.maxEntries)
-        .forEach((k) => delete this.entries[k]);
-    }
+    const keys = Object.keys(this.entries).filter((key) => !this.entries[key].active);
+    const excess = Object.keys(this.entries).length - this.maxEntries;
+    if (excess > 0) keys.sort((a, b) => this.entries[a].updatedAt - this.entries[b].updatedAt)
+      .slice(0, excess).forEach((key) => delete this.entries[key]);
+    await fs.mkdir(dirname(this.path), { recursive: true });
+    const tmp = `${this.path}.${randomUUID()}.tmp`;
     try {
-      await fs.mkdir(dirname(this.path), { recursive: true });
-      const tmp = `${this.path}.tmp`;
       const payload: FileShape = { schema: "dust-exporter.state.v1", entries: this.entries };
-      await fs.writeFile(tmp, JSON.stringify(payload), "utf-8");
+      await fs.writeFile(tmp, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
       await fs.rename(tmp, this.path);
-    } catch (err: any) {
-      log.warn("state persist failed", err?.message);
+    } finally {
+      await fs.rm(tmp, { force: true });
     }
   }
 }
