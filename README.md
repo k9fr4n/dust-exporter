@@ -295,8 +295,8 @@ docker compose build
 needed inside the container):
 
 ```bash
-docker compose run --rm dust-exporter login
-docker compose run --rm dust-exporter status   # should print authenticated: true
+docker compose exec -it dust-exporter npx tsx src/index.ts login
+docker compose exec -it dust-exporter npx tsx src/index.ts status
 ```
 
 **Run** the proxy (listens on `http://localhost:8787`):
