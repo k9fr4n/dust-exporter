@@ -177,7 +177,9 @@ class Session {
       });
       return { content: [{ type: "text", text: result.content }], isError: !!result.isError };
     });
-    this.transport = new ReverseMcpTransport(this.api, (sid) => { this.serverId = sid; }, `client-tools-${randomUUID()}`);
+    // Dust's mcp/register API caps serverName at 30 chars; keep a short
+    // random suffix instead of a full UUID (13 + 8 = 21 chars).
+    this.transport = new ReverseMcpTransport(this.api, (sid) => { this.serverId = sid; }, `client-tools-${randomUUID().slice(0, 8)}`);
     await server.connect(this.transport);
     for (let i = 0; i < 50 && !this.serverId; i++) await sleep(100);
     if (!this.serverId) throw new Error("client-tools MCP server failed to register (OAuth required)");
